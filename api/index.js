@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const REF = "https://music.163.com/";
@@ -567,7 +569,7 @@ export default async function handler(req, res) {
     if (path === "/api/ping") {
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-      res.end(JSON.stringify({ commit: "08be505", ts: Date.now() }));
+      res.end(JSON.stringify({ commit: "1c4b337", build: BUILD_ID, ts: Date.now() }));
       return;
     }
 
