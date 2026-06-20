@@ -563,8 +563,15 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Ping — returns git commit to verify which version is actually deployed
+    if (path === "/api/ping") {
+      res.statusCode = 200; res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.end(JSON.stringify({ commit: "08be505", ts: Date.now() }));
+      return;
+    }
+
     // Health
-    if (path === "/api/health") {
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true })); return;
     }
