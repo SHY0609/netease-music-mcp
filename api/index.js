@@ -104,18 +104,23 @@ async function getPlaylists() {
 }
 
 async function getPlaylistDetail(id) {
-  const r = await apiGet(`/api/playlist/detail?id=${id}&limit=20`);
-  const tracks = (r.playlist?.tracks || []).map(s => ({
-    id: String(s.id), name: s.name,
-    artist: (s.artists || s.ar || []).map(a => a.name).join(" / "),
-  }));
-  return { name: r.playlist?.name || "", tracks };
+  const r = await apiGet(`/api/v6/playlist/detail?id=${id}&n=30`);
+  const p = r.playlist || {};
+  const tracks = (p.tracks || p.trackIds || []).map(s => {
+    if (typeof s === "object") return { id: String(s.id), name: s.name, artist: (s.artists || s.ar || []).map(a => a.name).join(" / ") };
+    return { id: String(s), name: "", artist: "" }; // trackIds format
+  });
+  return { name: p.name || "(unnamed)", trackCount: p.trackCount || tracks.length, tracks };
 }
 
 async function addToPlaylist(pid, songId) {
-  const r = await apiGet(`/api/playlist/manipulate/tracks?op=add&pid=${pid}&trackIds=${songId}`);
-  if (r.code !== 200) throw new Error(r.message || r.msg || "add failed");
-  return true;
+  // Try JSON array format first (standard Netease API format)
+  const r = await apiGet(`/api/playlist/manipulate/tracks?op=add&pid=${pid}&trackIds=%5B${songId}%5D`);
+  if (r.code === 200) return true;
+  // Fallback: try comma-separated format
+  const r2 = await apiGet(`/api/playlist/manipulate/tracks?op=add&pid=${pid}&trackIds=${songId}`);
+  if (r2.code === 200) return true;
+  throw new Error(r2.message || r2.msg || r.message || r.msg || "add failed");
 }
 
 // ─── MCP (lightweight JSON‑RPC) ────────────────────────────
@@ -257,7 +262,7 @@ function playerHtml() {
 /* progress */
 .progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px;font-variant-numeric:tabular-nums}.time.end{text-align:right}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px;position:relative;overflow:visible}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear;position:relative}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity .15s}.bar-wrap:active .bar-fill::after{opacity:1}
 .controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;stroke-width:2.5;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 快速测试·播放周杰伦</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
-const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="";
+const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[];
 function fm(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec}
 // Media Session
 if("mediaSession" in navigator){navigator.mediaSession.setActionHandler("play",()=>a.play());navigator.mediaSession.setActionHandler("pause",()=>a.pause());navigator.mediaSession.setActionHandler("previoustrack",()=>prev());navigator.mediaSession.setActionHandler("nexttrack",()=>next());}
@@ -266,13 +271,19 @@ async function poll(){try{const r=await fetch("/api/state");if(!r.ok)return;cons
 // Resolve URL (player-initiated, retries on next poll)
 function resolveUrlFor(songId){if(!songId||resolvingUrl===songId)return;resolvingUrl=songId;document.getElementById("status").textContent="🔊 加载音频...";fetch("/api/url?id="+encodeURIComponent(songId)).then(r=>r.json()).then(j=>{if(j.playUrl&&currentId===songId){a.src=j.playUrl;a.play().catch(()=>{});document.getElementById("status").textContent="▶ 播放中"}else if(currentId===songId){document.getElementById("status").textContent="⚠ 无播放链接";}resolvingUrl=null;}).catch(()=>{resolvingUrl=null;document.getElementById("status").textContent="⚠ 加载失败·稍后重试"});}
 function render(d){
+  // Merge server queue with local memory (server is authority but local survives flickers)
+  if(d.queue&&d.queue.length>0)localQueue=d.queue;
+  const q=localQueue;
   if(d.current&&d.current.id!==currentId){currentId=d.current.id;document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});}if(d.playUrl){a.src=d.playUrl;a.play().catch(()=>{});document.getElementById("status").textContent="▶ 播放中"}else{resolveUrlFor(d.current.id)}}
-  // Play icon
-  document.getElementById("playIcon").innerHTML=a.paused?'<polygon points="6 4 20 12 6 20"/>':'<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>';
+  // Play icon (only update if it actually changed)
+  var pi=document.getElementById("playIcon");
+  var needPlay=a.paused?'<polygon points="6 4 20 12 6 20"/>':'<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>';
+  if(pi.innerHTML.indexOf(needPlay.slice(0,20))<0)pi.innerHTML=needPlay;
   // Progress bar
-  if(a.duration&&!isNaN(a.duration)){const pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}else{document.getElementById("barFill").style.width="0%";document.getElementById("curTime").textContent="0:00";document.getElementById("durTime").textContent=d.current&&d.current.durationMs?fm(d.current.durationMs/1000):"0:00"}
-  // Queue
-  const q=d.queue||[];const qStr=q.map(t=>t.id).join(",")+"|"+currentId;if(qStr!==lastQueueStr){lastQueueStr=qStr;const el=document.getElementById("queue");if(!q.length)el.innerHTML='<div class="empty">队列空的 — 让 Claude 给你加歌</div>';else el.innerHTML=q.map(t=>'<div class="queue-item'+(t.id===currentId?' active':'')+'"><img src="'+(t.coverUrl||'')+'" onerror="this.style.background=\\'#333\\';this.src=\\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 38 38%22><rect fill=%22%23333%22 width=%2238%22 height=%2238%22/><text fill=%22%23888%22 x=%2219%22 y=%2224%22 text-anchor=%22middle%22 font-size=%2213%22>🎵</text></svg>\\'"><div class="qi"><div class="qname">'+esc(t.name)+'</div><div class="qart">'+esc(t.artist)+'</div></div></div>').join("")}}
+  if(a.duration&&!isNaN(a.duration)){var pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}else{document.getElementById("barFill").style.width="0%";document.getElementById("curTime").textContent="0:00";document.getElementById("durTime").textContent=d.current&&d.current.durationMs?fm(d.current.durationMs/1000):"0:00"}
+  // Queue — only rebuild if content changed
+  var qStr=q.map(function(t){return t.id}).join(",")+"|"+currentId;
+  if(qStr!==lastQueueStr){lastQueueStr=qStr;var el=document.getElementById("queue");if(!q.length)el.innerHTML='<div class="empty">队列空的 — 让 Claude 给你加歌</div>';else{var h='';for(var i=0;i<q.length;i++){var t=q[i];h+='<div class="queue-item'+(t.id===currentId?' active':'')+'"><img src="'+(t.coverUrl||'')+'" onerror="this.style.background=\\'#333\\';this.src=\\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 38 38%22><rect fill=%22%23333%22 width=%2238%22 height=%2238%22/><text fill=%22%23888%22 x=%2219%22 y=%2224%22 text-anchor=%22middle%22 font-size=%2213%22>🎵</text></svg>\\'"><div class="qi"><div class="qname">'+esc(t.name)+'</div><div class="qart">'+esc(t.artist)+'</div></div></div>';}el.innerHTML=h;}}}
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 // Controls
 function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}
