@@ -530,7 +530,7 @@ export default async function handler(req, res) {
       try {
         // Test 1: search
         const search = await searchSongs("Justin Bieber", 2);
-        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "" };
+        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "", coverUrl: (search[0]?.coverUrl || "(empty)").slice(0, 80) };
       } catch (e) { results.search = { error: e.message }; }
       try {
         // Test 2: playlists
