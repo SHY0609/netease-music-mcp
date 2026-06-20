@@ -18,10 +18,29 @@ async function apiGet(path) {
   catch { throw new Error(`Netease non-JSON: ${text.slice(0, 200)}`); }
 }
 
-// ─── player state (in-memory; player syncs full state every 3s as backup) ──
-let _state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 };
-function getPlayer() {
-  return _state;
+// ─── player state (file-backed + in-memory hybrid) ──
+import { readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const STATE_FILE = join(tmpdir(), "netease-player-state.json");
+const EMPTY_STATE = () => ({ queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 });
+
+let _state = null;
+async function getPlayer() {
+  if (_state) return _state;
+  try {
+    const raw = await readFile(STATE_FILE, "utf8");
+    _state = JSON.parse(raw);
+    if (!_state._mcpSetAt) _state._mcpSetAt = 0;
+    return _state;
+  } catch {
+    _state = EMPTY_STATE();
+    return _state;
+  }
+}
+async function saveState() {
+  if (!_state) return;
+  try { await writeFile(STATE_FILE, JSON.stringify(_state), "utf8"); } catch {}
 }
 // Mark state as recently set by MCP — player sync won't overwrite for 6s
 function mcpTouch() {
@@ -250,7 +269,7 @@ const tools = [
 ];
 
 async function execTool(name, args) {
-  const p = getPlayer();
+  const p = await getPlayer();
   try {
     switch (name) {
       case "play": {
@@ -265,21 +284,21 @@ async function execTool(name, args) {
         p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
         p.status = "playing";
         if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift(pick);
-        mcpTouch();
+        mcpTouch(); await saveState();
         return `🎵 ${pick.name} - ${pick.artist}`;
       }
       case "skip":
         if (p.queue.length > 1) {
           p.queue.shift(); p.current = p.queue[0]; p.current.playUrl = "";
           p.status = "playing";
-          mcpTouch();
+          mcpTouch(); await saveState();
           return `⏭ ${p.current.name} - ${p.current.artist}`;
         }
         if (p.current?.id) {
           // Replay current from start
           p.status = "playing";
           p.current.playUrl = "";
-          mcpTouch();
+          mcpTouch(); await saveState();
           return `🔄 Replaying ${p.current.name} - ${p.current.artist}`;
         }
         p.status = "idle";
@@ -456,7 +475,7 @@ export default async function handler(req, res) {
 
     // Player state
     if (req.method === "GET" && path === "/api/state") {
-      const p = getPlayer();
+      const p = await getPlayer();
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, currentTime: p.currentTime || 0, playUrl: p.current?.playUrl || "", mcpSetAt: p._mcpSetAt || 0 }));
       return;
@@ -469,7 +488,7 @@ export default async function handler(req, res) {
       let playUrl = "";
       try { playUrl = await getSongUrl(id) || ""; } catch {}
       // Cache it on the current song
-      const p = getPlayer();
+      const p = await getPlayer();
       if (p.current?.id === id) p.current.playUrl = playUrl;
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ playUrl }));
@@ -478,7 +497,7 @@ export default async function handler(req, res) {
 
     // Player next/prev — no blocking URL resolve
     if (req.method === "GET" && (path === "/api/next" || path === "/api/prev")) {
-      const p = getPlayer();
+      const p = await getPlayer();
       if (path === "/api/next" && p.queue.length > 1) { p.queue.shift(); p.current = p.queue[0]; }
       p.current && (p.current.playUrl = "");
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
@@ -490,7 +509,7 @@ export default async function handler(req, res) {
     if (req.method === "POST" && (path === "/api/time" || path === "/api/sync")) {
       try {
         const b = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-        mergeFromPlayer(b);
+        mergeFromPlayer(b); await saveState();
       } catch {}
       res.statusCode = 200; res.end("ok");
       return;
