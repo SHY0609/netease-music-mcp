@@ -23,11 +23,64 @@ import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const STATE_FILE = join(tmpdir(), "netease-player-state.json");
+// ─── shared state store (jsonblob — survives across Vercel instances) ──
+let _blobUrl = null;
+async function getBlobUrl() {
+  if (_blobUrl) return _blobUrl;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    _blobUrl = (await readFile(join(tmpdir(), "nm-blob-url.txt"), "utf8")).trim();
+    return _blobUrl;
+  } catch { return null; }
+}
+async function setBlobUrl(url) {
+  _blobUrl = url;
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    await writeFile(join(tmpdir(), "nm-blob-url.txt"), url, "utf8");
+  } catch {}
+}
+async function loadSharedState() {
+  const url = await getBlobUrl();
+  if (!url) return null;
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+async function saveSharedState(state) {
+  try {
+    let url = await getBlobUrl();
+    if (!url) {
+      const r = await fetch("https://jsonblob.com/api/jsonBlob", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(state),
+      });
+      if (!r.ok) return;
+      const loc = r.headers.get("location");
+      if (loc) await setBlobUrl(loc);
+    } else {
+      await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state),
+      });
+    }
+  } catch {}
+}
+
 const EMPTY_STATE = () => ({ queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 });
 
 let _state = null;
 async function getPlayer() {
   if (_state) return _state;
+  try { const shared = await loadSharedState(); if (shared && shared.current) { _state = shared; if (!_state._mcpSetAt) _state._mcpSetAt = 0; return _state; } } catch {}
   try {
     const raw = await readFile(STATE_FILE, "utf8");
     _state = JSON.parse(raw);
@@ -41,6 +94,7 @@ async function getPlayer() {
 async function saveState() {
   if (!_state) return;
   try { await writeFile(STATE_FILE, JSON.stringify(_state), "utf8"); } catch {}
+  saveSharedState(_state);
 }
 // Mark state as recently set by MCP — player sync won't overwrite for 6s
 function mcpTouch() {
