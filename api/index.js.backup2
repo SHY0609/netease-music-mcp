@@ -421,19 +421,12 @@ function render(d){
   if(d.queue&&d.queue.length>0){
     for(var i=0;i<d.queue.length;i++){var s=d.queue[i];if(!localQueue.some(function(t){return t.id===s.id})){localQueue.push(s);}}
   }
-  // Auto-switch: nothing playing OR server has new MCP command (local timestamp)
-  var lastMcp=0;try{lastMcp=parseInt(localStorage.getItem("nm_lastMcp")||"0")}catch(e){}
-  var serverMcp=d.mcpSetAt||0;
-  var mcpNewCmd=currentId&&d.current&&d.current.id&&d.current.id!==currentId&&serverMcp>lastMcp;
-  if(mcpNewCmd){localStorage.setItem("nm_lastMcp",String(serverMcp))}
-  if((!currentId||mcpNewCmd)&&d.current&&d.current.id){
-    if(mcpNewCmd){var tgt=localQueue.find(function(t){return t.id===d.current.id});if(tgt)playSong(tgt)}
-    else{
+  // Only auto-switch to new song if nothing is playing yet
+  if(!currentId&&d.current&&d.current.id){
     currentId=d.current.id;playerActive=true;
     document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";
     if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});}
     if(d.playUrl){a.src=d.playUrl;a.play().catch(function(){});document.getElementById("status").textContent="▶ 播放中"}else{resolveUrlFor(d.current.id)}
-  }}
   }
   // Progress bar
   if(a.duration&&!isNaN(a.duration)){var pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}
