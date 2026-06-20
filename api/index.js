@@ -15,31 +15,52 @@ async function apiGet(path) {
   catch { throw new Error(`Netease non-JSON: ${text.slice(0, 200)}`); }
 }
 
-// ─── persistent player state (file-backed, survives warm instances) ──
-import { readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-const STATE_FILE = join(tmpdir(), "netease-player-state.json");
-
-async function loadState() {
-  try {
-    const raw = await readFile(STATE_FILE, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null };
-  }
-}
-async function saveState(s) {
-  try { await writeFile(STATE_FILE, JSON.stringify(s), "utf8"); } catch {}
-}
-// Global cache (warm instance), reloaded from file each request
-let _state = null;
-async function getPlayer() {
-  if (!_state) _state = await loadState();
+// ─── player state (in-memory; player syncs full state every 3s as backup) ──
+let _state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null };
+function getPlayer() {
   return _state;
 }
-async function persist() {
-  if (_state) await saveState(_state);
+// Player syncs its full state → server updates from player (authoritative)
+function mergeFromPlayer(data) {
+  if (!data) return;
+  if (data.time !== undefined) _state.currentTime = Number(data.time) || 0;
+  if (data.songId) {
+    // Player has a song playing — ensure server state reflects it
+    if (!_state.current || _state.current.id !== data.songId) {
+      _state.current = {
+        id: data.songId,
+        name: data.name || _state.current?.name || "Unknown",
+        artist: data.artist || _state.current?.artist || "",
+        album: data.album || _state.current?.album || "",
+        coverUrl: data.coverUrl || _state.current?.coverUrl || "",
+        durationMs: data.durationMs || _state.current?.durationMs || 0,
+        playUrl: data.playUrl || _state.current?.playUrl || "",
+      };
+    }
+    if (!_state.status || _state.status === "idle") _state.status = "playing";
+  }
+  // Merge queue from player
+  if (data.queue && Array.isArray(data.queue) && data.queue.length > 0) {
+    const merged = [];
+    const seen = new Set();
+    for (const s of data.queue) {
+      if (!s.id) continue;
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      // Prefer existing server entry if available (has more metadata)
+      const existing = _state.queue.find(q => q.id === s.id);
+      merged.push(existing || { id: s.id, name: s.name || "", artist: s.artist || "", coverUrl: s.coverUrl || "", durationMs: s.durationMs || 0, album: s.album || "", playUrl: s.playUrl || "" });
+    }
+    // Keep current song at front
+    if (data.songId && merged.length > 0) {
+      const curIdx = merged.findIndex(s => s.id === data.songId);
+      if (curIdx > 0) {
+        const [cur] = merged.splice(curIdx, 1);
+        merged.unshift(cur);
+      }
+    }
+    _state.queue = merged;
+  }
 }
 
 // ─── lyrics parser ─────────────────────────────────────────
@@ -187,7 +208,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.2.0" },
+  serverInfo: { name: "netease-music", version: "1.3.0" },
   capabilities: { tools: {} },
 };
 
@@ -213,7 +234,7 @@ const tools = [
 ];
 
 async function execTool(name, args) {
-  const p = await getPlayer();
+  const p = getPlayer();
   try {
     switch (name) {
       case "play": {
@@ -228,29 +249,28 @@ async function execTool(name, args) {
         p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
         p.status = "playing";
         if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift(pick);
-        await persist();
         return `🎵 ${pick.name} - ${pick.artist}`;
       }
       case "skip":
         if (p.queue.length > 1) {
           p.queue.shift(); p.current = p.queue[0]; p.current.playUrl = "";
           p.status = "playing";
-          await persist();
+  
           return `⏭ ${p.current.name} - ${p.current.artist}`;
         }
         if (p.current?.id) {
           // Replay current from start
           p.status = "playing";
           p.current.playUrl = "";
-          await persist();
+  
           return `🔄 Replaying ${p.current.name} - ${p.current.artist}`;
         }
         p.status = "idle";
-        await persist();
+
         return "Queue empty";
       case "pause":
         p.status = p.status === "paused" ? "playing" : "paused";
-        await persist();
+
         return p.status === "paused" ? "⏸ Paused" : "▶ Playing";
       case "queue":
         return JSON.stringify({ current: p.current?.name || null, count: p.queue.length, status: p.status });
@@ -370,8 +390,8 @@ a.addEventListener("ended",()=>{document.getElementById("status").textContent="�
 a.addEventListener("error",()=>{document.getElementById("status").textContent="⚠ 播放失败·2秒后重试";setTimeout(()=>{if(currentId)resolveUrlFor(currentId)},2000)});
 a.addEventListener("timeupdate",function(){if(a.duration&&!isNaN(a.duration)){const pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}});
 setInterval(poll,2000);poll();
-// Report playback time to server every 3s (so AI knows where you are)
-setInterval(()=>{if(a.currentTime&&!a.paused)fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({time:a.currentTime})}).catch(()=>{})},3000);
+// Sync full player state to server every 3s (source of truth for AI)
+setInterval(()=>{var s={time:a.currentTime||0};if(currentId){var cur=localQueue.find(function(t){return t.id===currentId});s.songId=currentId;if(cur){s.name=cur.name;s.artist=cur.artist;s.coverUrl=cur.coverUrl;s.durationMs=cur.durationMs;s.album=cur.album}s.queue=localQueue.slice(0,20).map(function(t){return {id:t.id,name:t.name,artist:t.artist,coverUrl:t.coverUrl,durationMs:t.durationMs}})}fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(s)}).catch(function(){})},3000);
 // Quick test button — simulates Claude calling "play"
 document.getElementById("testBtn").addEventListener("click",function(){var btn=this;btn.textContent="加载第1首...";btn.disabled=true;var songs=["Justin Bieber Boyfriend","Justin Bieber As Long As You Love Me","Love Story Taylor Swift"];var done=0;function addOne(i){if(i>=songs.length){btn.textContent="✅ 3首已加入·刷新页面";btn.disabled=false;setTimeout(poll,500);return;}btn.textContent="加载第"+(i+1)+"首...";fetch("/api/mcp",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:90+i,method:"tools/call",params:{name:"play",arguments:{keyword:songs[i]}}})}).then(function(r){return r.json()}).then(function(j){done++;btn.textContent="✅ "+done+"/3";setTimeout(function(){addOne(i+1)},1000)}).catch(function(){btn.textContent="❌ 失败·重试";btn.disabled=false})}addOne(0)});
 
@@ -400,9 +420,9 @@ export default async function handler(req, res) {
 
     // Player state
     if (req.method === "GET" && path === "/api/state") {
-      const p = await getPlayer();
+      const p = getPlayer();
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, playUrl: p.current?.playUrl || "" }));
+      res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, currentTime: p.currentTime || 0, playUrl: p.current?.playUrl || "" }));
       return;
     }
 
@@ -413,7 +433,7 @@ export default async function handler(req, res) {
       let playUrl = "";
       try { playUrl = await getSongUrl(id) || ""; } catch {}
       // Cache it on the current song
-      const p = await getPlayer();
+      const p = getPlayer();
       if (p.current?.id === id) p.current.playUrl = playUrl;
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ playUrl }));
@@ -422,21 +442,19 @@ export default async function handler(req, res) {
 
     // Player next/prev — no blocking URL resolve
     if (req.method === "GET" && (path === "/api/next" || path === "/api/prev")) {
-      const p = await getPlayer();
+      const p = getPlayer();
       if (path === "/api/next" && p.queue.length > 1) { p.queue.shift(); p.current = p.queue[0]; }
       p.current && (p.current.playUrl = "");
-      await persist();
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ id: p.current?.id || "", playUrl: p.queue.length > 1 ? "" : "" }));
       return;
     }
 
-    // Player reports current playback time
-    if (req.method === "POST" && path === "/api/time") {
-      const p = await getPlayer();
+    // Player syncs full state (authoritative) — called every 3s
+    if (req.method === "POST" && (path === "/api/time" || path === "/api/sync")) {
       try {
         const b = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-        p.currentTime = Number(b.time) || 0;
+        mergeFromPlayer(b);
       } catch {}
       res.statusCode = 200; res.end("ok");
       return;
