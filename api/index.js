@@ -532,7 +532,7 @@ export default async function handler(req, res) {
 
     // Debug: comprehensive API test
     if (path === "/api/debug") {
-      const results = { version: "1.3.3", cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
+      const results = { version: "1.3.3", deployed: "2025-06-20T17:00Z", cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
       try {
         // Test 1: search
         const search = await searchSongs("Justin Bieber", 2);
