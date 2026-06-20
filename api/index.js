@@ -223,7 +223,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.4.0" },
+  serverInfo: { name: "netease-music", version: "1.4.1" },
   capabilities: { tools: {} },
 };
 
@@ -374,11 +374,15 @@ function render(d){
     for(var i=0;i<d.queue.length;i++){var s=d.queue[i];if(!localQueue.some(function(t){return t.id===s.id})){localQueue.push(s);}}
   }
   // Only auto-switch to new song if nothing is playing yet
-  if(!currentId&&d.current&&d.current.id){
+  var mcpSwitch=currentId&&d.current&&d.current.id&&d.current.id!==currentId&&d.mcpSetAt&&(Date.now()-d.mcpSetAt<10000);
+  if((!currentId||mcpSwitch)&&d.current&&d.current.id){
+    if(mcpSwitch){var tgt=localQueue.find(function(t){return t.id===d.current.id});if(tgt)playSong(tgt)}
+    else{
     currentId=d.current.id;playerActive=true;
     document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";
     if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});}
     if(d.playUrl){a.src=d.playUrl;a.play().catch(function(){});document.getElementById("status").textContent="▶ 播放中"}else{resolveUrlFor(d.current.id)}
+  }
   }
   // Progress bar
   if(a.duration&&!isNaN(a.duration)){var pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}
@@ -427,7 +431,7 @@ export default async function handler(req, res) {
 
   try {
     // Player page — versioned URL to defeat mobile browser cache
-    const PLAYER_VER = "1.4.0";
+    const PLAYER_VER = "1.4.1";
     if (req.method === "GET" && (path === "/" || path.startsWith("/?"))) {
       const qv = url.searchParams.get("v");
       if (qv !== PLAYER_VER) {
@@ -447,7 +451,7 @@ export default async function handler(req, res) {
     if (req.method === "GET" && path === "/api/state") {
       const p = getPlayer();
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, currentTime: p.currentTime || 0, playUrl: p.current?.playUrl || "" }));
+      res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, currentTime: p.currentTime || 0, playUrl: p.current?.playUrl || "", mcpSetAt: p._mcpSetAt || 0 }));
       return;
     }
 
