@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { BG_IMAGE } from "../lib/bg.js";
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
@@ -17,10 +18,29 @@ async function apiGet(path) {
   catch { throw new Error(`Netease non-JSON: ${text.slice(0, 200)}`); }
 }
 
-// ─── player state (in-memory; player syncs full state every 3s as backup) ──
-let _state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 };
-function getPlayer() {
-  return _state;
+// ─── player state (file-backed + in-memory hybrid) ──
+import { readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const STATE_FILE = join(tmpdir(), "netease-player-state.json");
+const EMPTY_STATE = () => ({ queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 });
+
+let _state = null;
+async function getPlayer() {
+  if (_state) return _state;
+  try {
+    const raw = await readFile(STATE_FILE, "utf8");
+    _state = JSON.parse(raw);
+    if (!_state._mcpSetAt) _state._mcpSetAt = 0;
+    return _state;
+  } catch {
+    _state = EMPTY_STATE();
+    return _state;
+  }
+}
+async function saveState() {
+  if (!_state) return;
+  try { await writeFile(STATE_FILE, JSON.stringify(_state), "utf8"); } catch {}
 }
 // Mark state as recently set by MCP — player sync won't overwrite for 6s
 function mcpTouch() {
@@ -107,16 +127,17 @@ async function getLyricsRaw(id) {
   } catch { return ""; }
 }
 
-
 function extractCover(s) {
+  // Try direct picUrl from album or song
   const direct = (s.album || s.al || {}).picUrl || s.picUrl;
   if (direct) return direct;
+  // Construct from pic_id + pic_str: https://p2.music.126.net/<str>/<id>.jpg
   const al = s.album || s.al || {};
   const picId = al.pic || al.picId || s.picId || al.pic_id;
   const picStr = al.pic_str || al.picUrl_str || s.pic_str;
-  if (picId && picStr) return 'https://p2.music.126.net/' + picStr + '/' + picId + '.jpg';
-  if (picId) return 'https://p2.music.126.net/' + picId + '.jpg';
-  return '';
+  if (picId && picStr) return `https://p2.music.126.net/${picStr}/${picId}.jpg`;
+  if (picId) return `https://p2.music.126.net/${picId}.jpg`;
+  return "";
 }
 async function searchSongs(kw, limit = 5) {
   const r = await apiGet(`/api/search/get?s=${encodeURIComponent(kw)}&type=1&limit=${limit}`);
@@ -234,7 +255,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.4.1" },
+  serverInfo: { name: "netease-music", version: "1.5.0" },
   capabilities: { tools: {} },
 };
 
@@ -260,7 +281,7 @@ const tools = [
 ];
 
 async function execTool(name, args) {
-  const p = getPlayer();
+  const p = await getPlayer();
   try {
     switch (name) {
       case "play": {
@@ -272,24 +293,33 @@ async function execTool(name, args) {
         }));
         const pick = checks.find(Boolean);
         if (!pick) return `"${args.keyword}" 的搜索结果无可播放歌曲`;
-        p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
+        // Fallback: try song detail API if search didn't return cover
+        let cover = pick.coverUrl;
+        if (!cover) {
+          try {
+            const detailR = await apiGet(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify([{id:Number(pick.id)}]))}`);
+            const ds = detailR.songs?.[0];
+            if (ds) cover = extractCover(ds) || (ds.al || {}).picUrl || "";
+          } catch {}
+        }
+        p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: cover, durationMs: pick.durationMs, playUrl: "" };
         p.status = "playing";
-        if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift(pick);
-        mcpTouch();
+        if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift({ id: pick.id, name: pick.name, artist: pick.artist, coverUrl: cover, durationMs: pick.durationMs });
+        mcpTouch(); await saveState();
         return `🎵 ${pick.name} - ${pick.artist}`;
       }
       case "skip":
         if (p.queue.length > 1) {
           p.queue.shift(); p.current = p.queue[0]; p.current.playUrl = "";
           p.status = "playing";
-          mcpTouch();
+          mcpTouch(); await saveState();
           return `⏭ ${p.current.name} - ${p.current.artist}`;
         }
         if (p.current?.id) {
           // Replay current from start
           p.status = "playing";
           p.current.playUrl = "";
-          mcpTouch();
+          mcpTouch(); await saveState();
           return `🔄 Replaying ${p.current.name} - ${p.current.artist}`;
         }
         p.status = "idle";
@@ -362,12 +392,19 @@ async function handleMcpMessage(msg) {
 }
 
 // ─── player HTML ───────────────────────────────────────────
-function playerHtml() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.3 Claude 音乐</title><meta http-equiv="cache-control" content="no-cache, no-store, must-revalidate"/><meta http-equiv="pragma" content="no-cache"/><meta http-equiv="expires" content="0"/><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:"SF Pro Display","PingFang SC",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px;box-shadow:0 20px 40px rgba(0,0,0,.5)}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}
-/* progress */
-.progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px;font-variant-numeric:tabular-nums}.time.end{text-align:right}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px;position:relative;overflow:visible}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear;position:relative}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity .15s}.bar-wrap:active .bar-fill::after{opacity:1}
-.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;stroke-width:2.5;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">v1.4.1 · 跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 测试·3首连播</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列 <button onclick=\"clearQueue()\" style=\"font-size:11px;padding:2px 10px;border-radius:10px;border:1px solid var(--muted);background:transparent;color:var(--muted);cursor:pointer;float:right\">清空</button></h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
-const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[],playerActive=false;try{var d=JSON.parse(localStorage.getItem('nm_player')||'{}');if(d.q){localQueue=d.q;currentId=d.cid}}catch(e){}function saveLocal(){try{localStorage.setItem('nm_player',JSON.stringify({q:localQueue,cid:currentId}));}catch(e){}}
+function playerHtml(state) {
+  const initJson = JSON.stringify({ current: state?.current || null, queue: (state?.queue || []).slice(0, 20), status: state?.status || "idle", mcpSetAt: state?._mcpSetAt || 0 });
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.3 Claude 音乐</title><meta http-equiv="cache-control" content="no-cache, no-store, must-revalidate"/><meta http-equiv="pragma" content="no-cache"/><meta http-equiv="expires" content="0"/><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--glass:rgba(20,20,20,0.55);--glassHover:rgba(30,30,30,0.65);--card:rgba(255,255,255,0.08);--muted:rgba(255,255,255,0.55);--accent:#eb8258;--accentGlow:rgba(235,130,88,0.3);--text:#f0ece6;--textDim:rgba(255,255,255,0.7)}body{background:var(--bg-color,#0d0d0d);color:var(--text);font-family:'SF Pro Display','PingFang SC',system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent;position:relative;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;z-index:-2;background:url(__BG__) center/cover no-repeat}
+body::after{content:'';position:fixed;inset:0;z-index:-1;background:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,rgba(0,0,0,0.55) 50%,rgba(0,0,0,0.75) 100%)}
+h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px;text-shadow:0 1px 3px rgba(0,0,0,.4)}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.art{width:min(260px,62vw);aspect-ratio:1;border-radius:20px;object-fit:cover;background:var(--card);margin-bottom:16px;box-shadow:0 25px 50px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.06);transition:all .4s ease}
+.art[src*='svg']{opacity:.5;transform:scale(.9)}
+.info{text-align:center;margin-bottom:10px}.info .name{font-size:clamp(15px,3.6vw,20px);font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.5)}.info .artist{color:var(--textDim);font-size:14px;margin-top:4px}
+.progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px;font-variant-numeric:tabular-nums}.time.end{text-align:right}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;position:relative}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;overflow:visible}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear;position:relative;box-shadow:0 0 8px var(--accentGlow)}.bar-fill::after{content:'';position:absolute;right:-6px;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity .2s;box-shadow:0 0 10px var(--accentGlow)}.bar-wrap:active .bar-fill::after{opacity:1}
+.controls{display:flex;gap:22px;align-items:center;justify-content:center;margin-bottom:24px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:all .2s;background:var(--glass);color:var(--text);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08)}.btn:active{transform:scale(.92);opacity:.8}.btn.small{width:44px;height:44px}.btn.big{width:62px;height:62px;background:var(--accent);color:#fff;border:none;box-shadow:0 8px 25px var(--accentGlow)}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:26px;height:26px;stroke-width:2.5;fill:currentColor}
+.queue{width:100%;max-width:min(360px,85vw);margin-top:6px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px;padding-left:4px}.queue-item{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:12px;margin-bottom:5px;background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.04);transition:all .2s}.queue-item.active{background:rgba(235,130,88,0.15);border:1px solid rgba(235,130,88,0.3);box-shadow:0 0 20px rgba(235,130,88,0.1)}.queue-item img{width:40px;height:40px;border-radius:10px;object-fit:cover;background:rgba(255,255,255,.05);flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">v1.5.1 · 跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 测试·3首连播</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列 <button onclick="clearQueue()" style="font-size:11px;padding:2px 10px;border-radius:10px;border:1px solid var(--muted);background:transparent;color:var(--muted);cursor:pointer;float:right">清空</button></h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>window.__INIT__=${initJson.replace(/</g,"003c")};
+const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[],playerActive=false;const LS_KEY="nm_player";function saveLocal(){try{localStorage.setItem(LS_KEY,JSON.stringify({q:localQueue,cid:currentId}));}catch(e){}}function loadLocal(){try{var d=JSON.parse(localStorage.getItem(LS_KEY)||"{}");if(d.q&&d.q.length){localQueue=d.q;currentId=d.cid;}}catch(e){}}
 function fm(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec}
 // Media Session
 if("mediaSession" in navigator){navigator.mediaSession.setActionHandler("play",()=>a.play());navigator.mediaSession.setActionHandler("pause",()=>a.pause());navigator.mediaSession.setActionHandler("previoustrack",()=>prev());navigator.mediaSession.setActionHandler("nexttrack",()=>next());}
@@ -379,22 +416,23 @@ function render(d){
   // Merge new songs from server into local queue (don't overwrite, don't switch)
   if(d.current&&d.current.id){
     var exists=localQueue.some(function(t){return t.id===d.current.id});
-    if(!exists){localQueue.push({id:d.current.id,name:d.current.name,artist:d.current.artist,coverUrl:d.current.coverUrl,durationMs:d.current.durationMs});saveLocal();}
+    if(!exists){localQueue.push({id:d.current.id,name:d.current.name,artist:d.current.artist,coverUrl:d.current.coverUrl,durationMs:d.current.durationMs});}
   }
   if(d.queue&&d.queue.length>0){
     for(var i=0;i<d.queue.length;i++){var s=d.queue[i];if(!localQueue.some(function(t){return t.id===s.id})){localQueue.push(s);}}
   }
-  // Only auto-switch to new song if nothing is playing yet
-  var mcpSwitch=currentId&&d.current&&d.current.id&&d.current.id!==currentId&&d.mcpSetAt&&(Date.now()-d.mcpSetAt<10000);
-  if((!currentId||mcpSwitch)&&d.current&&d.current.id){
-    if(mcpSwitch){var tgt=localQueue.find(function(t){return t.id===d.current.id});if(tgt)playSong(tgt)}
-    else{
-    currentId=d.current.id;playerActive=true;
+  // Auto-switch: nothing playing OR server has new MCP command
+  var lastMcp=0;try{lastMcp=parseInt(localStorage.getItem("nm_lastMcp")||"0")}catch(e){}
+  var serverMcp=d.mcpSetAt||0;
+  var mcpNewCmd=currentId&&d.current&&d.current.id&&d.current.id!==currentId&&serverMcp>lastMcp;
+  if(mcpNewCmd){localStorage.setItem("nm_lastMcp",String(serverMcp))}
+  if((!currentId||mcpNewCmd)&&d.current&&d.current.id){
+    if(mcpNewCmd){var tgt=localQueue.find(function(t){return t.id===d.current.id});if(tgt)playSong(tgt)}
+    else{currentId=d.current.id;playerActive=true;
     document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";
     if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});}
     if(d.playUrl){a.src=d.playUrl;a.play().catch(function(){});document.getElementById("status").textContent="▶ 播放中"}else{resolveUrlFor(d.current.id)}
-  }
-  }
+  }}
   // Progress bar
   if(a.duration&&!isNaN(a.duration)){var pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}
   // Play icon
@@ -408,11 +446,11 @@ function render(d){
   }}
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 // Controls
-function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}function clearQueue(){a.pause();a.src='';localQueue=[];currentId=null;document.getElementById('art').src='data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 200 200%27><rect fill=%27%231a1a1a%27 width=%27200%27 height=%27200%27/><text fill=%27%23888%27 x=%27100%27 y=%27110%27 text-anchor=%27middle%27 font-size=%2740%27>\ud83c\udfb5</text></svg>';document.getElementById('name').textContent='\u7b49\u5f85\u64ad\u653e';document.getElementById('artist').textContent='\u544a\u8bc9 Claude \u4f60\u60f3\u542c\u4ec0\u4e48';document.getElementById('status').textContent='\u961f\u5217\u5df2\u6e05\u7a7a';lastQueueStr='';render({queue:[],current:null,status:'idle'});fetch('/api/clear',{method:'POST'}).catch(function(){})}
+function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}function clearQueue(){a.pause();a.src='';localQueue=[];currentId=null;document.getElementById('art').src='data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 200 200%27><rect fill=%27%231a1a1a%27 width=%27200%27 height=%27200%27/><text fill=%27%23888%27 x=%27100%27 y=%27110%27 text-anchor=%27middle%27 font-size=%2740%27>🎵</text></svg>';document.getElementById('name').textContent='等待播放';document.getElementById('artist').textContent='告诉 Claude 你想听什么';document.getElementById('status').textContent='队列已清空';localStorage.removeItem('nm_player');lastQueueStr='';render({queue:[],current:null,status:'idle'});fetch('/api/clear',{method:'POST'}).catch(function(){})}
 function syncNow(){var s={time:a.currentTime||0};if(currentId){var sc=localQueue.find(function(t){return t.id===currentId});s.songId=currentId;if(sc){s.name=sc.name;s.artist=sc.artist;s.coverUrl=sc.coverUrl;s.durationMs=sc.durationMs;s.album=sc.album}s.queue=localQueue.slice(0,20).map(function(t){return {id:t.id,name:t.name,artist:t.artist,coverUrl:t.coverUrl,durationMs:t.durationMs}})}fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(s)}).catch(function(){})}
 function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});}playerActive=true;resolveUrlFor(t.id);saveLocal();document.getElementById("status").textContent="⏭ 切歌中...";setTimeout(function(){syncNow()},500)}
-function next(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>=0&&idx+1<localQueue.length){playSong(localQueue[idx+1])}else{document.getElementById("status").textContent="✅ 队列播完"}}
-function prev(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>0){playSong(localQueue[idx-1])}else if(localQueue.length>0){playSong(localQueue[0]);document.getElementById("status").textContent="🔁 第一首"}}
+function next(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>=0&&idx+1<localQueue.length){playSong(localQueue[idx+1]);saveLocal()}else{document.getElementById("status").textContent="✅ 队列播完"}}
+function prev(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>0){playSong(localQueue[idx-1]);saveLocal()}else if(localQueue.length>0){playSong(localQueue[0]);document.getElementById("status").textContent="🔁 第一首"}}
 // Progress bar click to seek
 document.getElementById("barWrap").addEventListener("click",function(e){if(!a.duration||isNaN(a.duration))return;const rect=this.getBoundingClientRect();const pct=(e.clientX-rect.left)/rect.width;a.currentTime=Math.max(0,Math.min(a.duration,pct*a.duration))});
 // Audio events
@@ -421,13 +459,13 @@ a.addEventListener("pause",()=>{document.getElementById("playIcon").innerHTML='<
 a.addEventListener("ended",()=>{document.getElementById("status").textContent="✅ 播放完毕·切歌中";setTimeout(next,500)});
 a.addEventListener("error",()=>{document.getElementById("status").textContent="⚠ 播放失败·2秒后重试";setTimeout(()=>{if(currentId)resolveUrlFor(currentId)},2000)});
 a.addEventListener("timeupdate",function(){if(a.duration&&!isNaN(a.duration)){const pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}});
-setInterval(poll,2000);poll();
+loadLocal();if(window.__INIT__&&window.__INIT__.current)render(window.__INIT__);setInterval(poll,2000);poll();
 // Sync full player state to server every 3s (source of truth for AI)
 setInterval(()=>{var s={time:a.currentTime||0};if(currentId){var cur=localQueue.find(function(t){return t.id===currentId});s.songId=currentId;if(cur){s.name=cur.name;s.artist=cur.artist;s.coverUrl=cur.coverUrl;s.durationMs=cur.durationMs;s.album=cur.album}s.queue=localQueue.slice(0,20).map(function(t){return {id:t.id,name:t.name,artist:t.artist,coverUrl:t.coverUrl,durationMs:t.durationMs}})}fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(s)}).catch(function(){})},3000);
 // Quick test button — simulates Claude calling "play"
 document.getElementById("testBtn").addEventListener("click",function(){var btn=this;btn.textContent="加载第1首...";btn.disabled=true;var songs=["Justin Bieber Boyfriend","Justin Bieber As Long As You Love Me","Love Story Taylor Swift"];var done=0;function addOne(i){if(i>=songs.length){btn.textContent="✅ 3首已加入·刷新页面";btn.disabled=false;setTimeout(poll,500);return;}btn.textContent="加载第"+(i+1)+"首...";fetch("/api/mcp",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:90+i,method:"tools/call",params:{name:"play",arguments:{keyword:songs[i]}}})}).then(function(r){return r.json()}).then(function(j){done++;btn.textContent="✅ "+done+"/3";setTimeout(function(){addOne(i+1)},1000)}).catch(function(){btn.textContent="❌ 失败·重试";btn.disabled=false})}addOne(0)});
 
-</script></body></html>`;
+</script></body></html>`.replace('__BG__', BG_IMAGE);
 }
 
 // ─── Vercel handler ─────────────────────────────────────────
@@ -442,7 +480,7 @@ export default async function handler(req, res) {
 
   try {
     // Player page — versioned URL to defeat mobile browser cache
-    const PLAYER_VER = "1.4.1";
+    const PLAYER_VER = "1.5.1";
     if (req.method === "GET" && (path === "/" || path.startsWith("/?"))) {
       const qv = url.searchParams.get("v");
       if (qv !== PLAYER_VER) {
@@ -455,12 +493,13 @@ export default async function handler(req, res) {
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
-      res.statusCode = 200; res.end(playerHtml()); return;
+      const initState = await getPlayer();
+      res.statusCode = 200; res.end(playerHtml(initState)); return;
     }
 
     // Player state
     if (req.method === "GET" && path === "/api/state") {
-      const p = getPlayer();
+      const p = await getPlayer();
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ current: p.current || null, queue: p.queue.slice(0, 20), status: p.status, currentTime: p.currentTime || 0, playUrl: p.current?.playUrl || "", mcpSetAt: p._mcpSetAt || 0 }));
       return;
@@ -473,7 +512,7 @@ export default async function handler(req, res) {
       let playUrl = "";
       try { playUrl = await getSongUrl(id) || ""; } catch {}
       // Cache it on the current song
-      const p = getPlayer();
+      const p = await getPlayer();
       if (p.current?.id === id) p.current.playUrl = playUrl;
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ playUrl }));
@@ -482,7 +521,7 @@ export default async function handler(req, res) {
 
     // Player next/prev — no blocking URL resolve
     if (req.method === "GET" && (path === "/api/next" || path === "/api/prev")) {
-      const p = getPlayer();
+      const p = await getPlayer();
       if (path === "/api/next" && p.queue.length > 1) { p.queue.shift(); p.current = p.queue[0]; }
       p.current && (p.current.playUrl = "");
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
@@ -490,10 +529,11 @@ export default async function handler(req, res) {
       return;
     }
 
-
-    // Clear state
+    // Clear server state (called from player Clear button)
     if (req.method === "POST" && path === "/api/clear") {
-      _state.queue = []; _state.current = null; _state.status = "idle"; _state.currentTime = 0;
+      const p = await getPlayer();
+      p.queue = []; p.current = null; p.status = "idle"; p.currentTime = 0;
+      await saveState();
       res.statusCode = 200; res.end("ok");
       return;
     }
@@ -502,7 +542,7 @@ export default async function handler(req, res) {
     if (req.method === "POST" && (path === "/api/time" || path === "/api/sync")) {
       try {
         const b = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-        mergeFromPlayer(b);
+        mergeFromPlayer(b); await saveState();
       } catch {}
       res.statusCode = 200; res.end("ok");
       return;
@@ -514,7 +554,7 @@ export default async function handler(req, res) {
       try {
         // Test 1: search
         const search = await searchSongs("Justin Bieber", 2);
-        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "" };
+        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "", coverUrl: (search[0]?.coverUrl || "(empty)").slice(0, 80) };
       } catch (e) { results.search = { error: e.message }; }
       try {
         // Test 2: playlists
