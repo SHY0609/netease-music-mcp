@@ -94,7 +94,7 @@ async function getPlayer() {
 async function saveState() {
   if (!_state) return;
   try { await writeFile(STATE_FILE, JSON.stringify(_state), "utf8"); } catch {}
-  saveSharedState(_state);
+  await saveSharedState(_state);
 }
 // Mark state as recently set by MCP — player sync won't overwrite for 6s
 function mcpTouch() {
