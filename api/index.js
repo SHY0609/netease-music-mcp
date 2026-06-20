@@ -441,7 +441,7 @@ function render(d){
   }}
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 // Controls
-function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}function clearQueue(){a.pause();a.src='';localQueue=[];currentId=null;document.getElementById('art').src='data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 200 200%27><rect fill=%27%231a1a1a%27 width=%27200%27 height=%27200%27/><text fill=%27%23888%27 x=%27100%27 y=%27110%27 text-anchor=%27middle%27 font-size=%2740%27>🎵</text></svg>';document.getElementById('name').textContent='等待播放';document.getElementById('artist').textContent='告诉 Claude 你想听什么';document.getElementById('status').textContent='队列已清空';saveLocal();lastQueueStr='';render({queue:[],current:null,status:'idle'})}
+function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}function clearQueue(){a.pause();a.src='';localQueue=[];currentId=null;document.getElementById('art').src='data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 200 200%27><rect fill=%27%231a1a1a%27 width=%27200%27 height=%27200%27/><text fill=%27%23888%27 x=%27100%27 y=%27110%27 text-anchor=%27middle%27 font-size=%2740%27>🎵</text></svg>';document.getElementById('name').textContent='等待播放';document.getElementById('artist').textContent='告诉 Claude 你想听什么';document.getElementById('status').textContent='队列已清空';localStorage.removeItem('nm_player');lastQueueStr='';render({queue:[],current:null,status:'idle'});fetch('/api/clear',{method:'POST'}).catch(function(){})}
 function syncNow(){var s={time:a.currentTime||0};if(currentId){var sc=localQueue.find(function(t){return t.id===currentId});s.songId=currentId;if(sc){s.name=sc.name;s.artist=sc.artist;s.coverUrl=sc.coverUrl;s.durationMs=sc.durationMs;s.album=sc.album}s.queue=localQueue.slice(0,20).map(function(t){return {id:t.id,name:t.name,artist:t.artist,coverUrl:t.coverUrl,durationMs:t.durationMs}})}fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(s)}).catch(function(){})}
 function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});}playerActive=true;resolveUrlFor(t.id);saveLocal();document.getElementById("status").textContent="⏭ 切歌中...";setTimeout(function(){syncNow()},500)}
 function next(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>=0&&idx+1<localQueue.length){playSong(localQueue[idx+1]);saveLocal()}else{document.getElementById("status").textContent="✅ 队列播完"}}
@@ -521,6 +521,15 @@ export default async function handler(req, res) {
       p.current && (p.current.playUrl = "");
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ id: p.current?.id || "", playUrl: p.queue.length > 1 ? "" : "" }));
+      return;
+    }
+
+    // Clear server state (called from player Clear button)
+    if (req.method === "POST" && path === "/api/clear") {
+      const p = await getPlayer();
+      p.queue = []; p.current = null; p.status = "idle"; p.currentTime = 0;
+      await saveState();
+      res.statusCode = 200; res.end("ok");
       return;
     }
 
