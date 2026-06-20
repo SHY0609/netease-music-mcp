@@ -497,40 +497,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Debug: direct add_to_playlist test (bypass MCP, returns raw API responses)
-    if (path === "/api/debug-add") {
-      const testPid = url.searchParams.get("pid") || "";
-      const testSid = url.searchParams.get("sid") || "";
-      if (!testPid || !testSid) {
-        res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ usage: "/api/debug-add?pid=PLAYLIST_ID&sid=SONG_ID" }));
-        return;
-      }
-      const formats = [
-        { label: "A_jsonArr", body: `op=add&pid=${encodeURIComponent(testPid)}&trackIds=${encodeURIComponent(`[${testSid}]`)}` },
-        { label: "B_plainId", body: `op=add&pid=${encodeURIComponent(testPid)}&trackIds=${encodeURIComponent(testSid)}` },
-        { label: "C_tracks", body: `op=add&pid=${encodeURIComponent(testPid)}&tracks=${encodeURIComponent(testSid)}` },
-      ];
-      const results = [];
-      for (const fmt of formats) {
-        try {
-          const fres = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
-            method: "POST",
-            headers: { ...H, "content-type": "application/x-www-form-urlencoded" },
-            body: fmt.body,
-          });
-          const fr = await fres.json();
-          results.push({ label: fmt.label, code: fr.code, message: fr.message || fr.msg || "", raw: JSON.stringify(fr).slice(0, 300) });
-        } catch (e) {
-          results.push({ label: fmt.label, error: e.message });
-        }
-      }
-      res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ pid: testPid, sid: testSid, results }));
-      return;
-    }
-
-    // Debug: comprehensive API test
+    // Debug: comprehensive API test (add ?addPid=X&addSid=Y for detailed add trace)
     if (path === "/api/debug") {
       const results = { version: "1.3.3", deployed: "2025-06-20T17:00Z", cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
       try {
@@ -556,14 +523,41 @@ export default async function handler(req, res) {
           results.playlistDetail = { name: detail.name, trackCount: detail.trackCount, tracksReturned: detail.tracks.length };
         }
       } catch (e) { results.playlistDetail = { error: e.message }; }
-      try {
-        // Test 5: add_to_playlist (will show actual error from API)
-        const pl = await getPlaylists();
-        if (pl.length > 0) {
-          await addToPlaylist(pl[0].id, "186016");
-          results.addTest = { ok: true, msg: "add succeeded for test song" };
+      // Test 5: detailed add_to_playlist (all 3 formats, raw API response per format)
+      const addPid = url.searchParams.get("addPid");
+      const addSid = url.searchParams.get("addSid");
+      if (addPid && addSid) {
+        const addFormats = [
+          { label: "A_jsonArr", body: `op=add&pid=${encodeURIComponent(addPid)}&trackIds=${encodeURIComponent(`[${addSid}]`)}` },
+          { label: "B_plainId", body: `op=add&pid=${encodeURIComponent(addPid)}&trackIds=${encodeURIComponent(addSid)}` },
+          { label: "C_tracks", body: `op=add&pid=${encodeURIComponent(addPid)}&tracks=${encodeURIComponent(addSid)}` },
+        ];
+        const addResults = [];
+        for (const fmt of addFormats) {
+          try {
+            const fres = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
+              method: "POST",
+              headers: { ...H, "content-type": "application/x-www-form-urlencoded" },
+              body: fmt.body,
+            });
+            const text = await fres.text();
+            let parsed = {};
+            try { parsed = JSON.parse(text); } catch {}
+            addResults.push({ label: fmt.label, httpStatus: fres.status, code: parsed.code, message: parsed.message || parsed.msg || "", bodyPreview: text.slice(0, 200) });
+          } catch (e) {
+            addResults.push({ label: fmt.label, error: e.message });
+          }
         }
-      } catch (e) { results.addTest = { ok: false, error: e.message }; }
+        results.addTest = { pid: addPid, sid: addSid, formats: addResults };
+      } else {
+        try {
+          const pl = await getPlaylists();
+          if (pl.length > 0) {
+            await addToPlaylist(pl[0].id, "186016");
+            results.addTest = { ok: true, msg: "add succeeded for test song" };
+          }
+        } catch (e) { results.addTest = { ok: false, error: e.message }; }
+      }
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(results));
       return;
