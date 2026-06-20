@@ -81,21 +81,46 @@ async function searchSongs(kw, limit = 5) {
 }
 
 async function getSongUrl(id) {
-  // 1. Try authenticated API first (for VIP songs, needs full cookie)
+  // Try multiple sources in parallel, return first valid URL
+  const candidates = [];
+
+  // 1. Old API — standard quality (most compatible)
   try {
     const r = await apiGet(`/api/song/enhance/player/url?ids=[${id}]&br=320000`);
     const url = r.data?.[0]?.url;
-    if (url) return url.replace(/^http:\/\//, "https://");
+    if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
   } catch {}
-  // 2. Fallback: outer URL (no auth needed, works for free songs)
-  try {
-    const r = await fetch(`https://music.163.com/song/media/outer/url?id=${id}`, {
-      headers: H, redirect: "manual",
-    });
-    const loc = r.headers.get("location") || "";
-    if (!loc.includes("/404")) return loc.replace(/^http:\/\//, "https://");
-  } catch {}
-  return "";
+
+  // 2. Old API — lower quality fallback (128kbps, may work when 320k fails)
+  if (!candidates.length) {
+    try {
+      const r = await apiGet(`/api/song/enhance/player/url?ids=[${id}]&br=128000`);
+      const url = r.data?.[0]?.url;
+      if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
+    } catch {}
+  }
+
+  // 3. Old API v1 endpoint (newer, may have different availability)
+  if (!candidates.length) {
+    try {
+      const r = await apiGet(`/api/song/enhance/player/url/v1?ids=[${id}]&level=standard&encodeType=mp3`);
+      const url = r.data?.[0]?.url;
+      if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
+    } catch {}
+  }
+
+  // 4. Outer URL fallback (no auth needed, works for free songs)
+  if (!candidates.length) {
+    try {
+      const r = await fetch(`https://music.163.com/song/media/outer/url?id=${id}`, {
+        headers: { ...H, Referer: "https://music.163.com/" }, redirect: "manual",
+      });
+      const loc = r.headers.get("location") || "";
+      if (loc && !loc.includes("/404")) candidates.push(loc.replace(/^http:\/\//, "https://"));
+    } catch {}
+  }
+
+  return candidates[0] || "";
 }
 
 async function getPlaylists() {
@@ -103,25 +128,56 @@ async function getPlaylists() {
   return (r.playlist || []).map(p => ({ id: String(p.id), name: p.name, trackCount: p.trackCount }));
 }
 
-async function getPlaylistDetail(id) {
-  const r = await apiGet(`/api/v6/playlist/detail?id=${id}&n=30`);
+async function getPlaylistDetail(id, offset = 0) {
+  const r = await apiGet(`/api/v6/playlist/detail?id=${id}&n=200&s=${offset}`);
   const p = r.playlist || {};
-  const tracks = (p.tracks || p.trackIds || []).map(s => {
-    if (typeof s === "object") return { id: String(s.id), name: s.name, artist: (s.artists || s.ar || []).map(a => a.name).join(" / ") };
-    return { id: String(s), name: "", artist: "" }; // trackIds format
-  });
+  // Prefer full track objects if available and non-empty
+  let tracks = [];
+  if (p.tracks && p.tracks.length > 0) {
+    tracks = p.tracks.map(s => ({
+      id: String(s.id), name: s.name,
+      artist: (s.artists || s.ar || []).map(a => a.name).join(" / "),
+      album: (s.album || s.al || {}).name || "",
+      coverUrl: (s.album || s.al || {}).picUrl || "",
+      durationMs: s.duration || s.dt || 0,
+    }));
+  } else if (p.trackIds && p.trackIds.length > 0) {
+    // trackIds format: [{id, v, ...}, ...] or plain numbers
+    const ids = p.trackIds.map(t => typeof t === "object" ? String(t.id) : String(t)).slice(0, 50);
+    // Batch fetch song details
+    try {
+      const detailR = await apiGet(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify(ids.map(id => ({id: Number(id)}))))}`);
+      if (detailR.code === 200 && detailR.songs) {
+        tracks = ids.map(id => {
+          const s = detailR.songs.find(song => String(song.id) === id);
+          if (s) return {
+            id: String(s.id), name: s.name,
+            artist: (s.ar || []).map(a => a.name).join(" / "),
+            album: (s.al || {}).name || "",
+            coverUrl: (s.al || {}).picUrl || "",
+            durationMs: s.dt || 0,
+          };
+          return { id, name: `Song ${id}`, artist: "", album: "", coverUrl: "", durationMs: 0 };
+        });
+      }
+    } catch {
+      tracks = ids.map(id => ({ id, name: `Song ${id}`, artist: "", album: "", coverUrl: "", durationMs: 0 }));
+    }
+  }
   return { name: p.name || "(unnamed)", trackCount: p.trackCount || tracks.length, tracks };
 }
 
 async function addToPlaylist(pid, songId) {
   // Write operations need POST to old API
+  // trackIds MUST be JSON array format: "[123456]" or "[123456,789012]"
+  const trackIds = `[${String(songId)}]`;
   const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
     method: "POST",
     headers: { ...H, "content-type": "application/x-www-form-urlencoded" },
-    body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(songId)}`,
+    body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(trackIds)}`,
   });
   const r = await res.json();
-  if (r.code !== 200) throw new Error(r.message || r.msg || "add failed");
+  if (r.code !== 200) throw new Error(r.message || r.msg || `add failed (code=${r.code})`);
   return true;
 }
 
@@ -131,7 +187,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.1.0" },
+  serverInfo: { name: "netease-music", version: "1.2.0" },
   capabilities: { tools: {} },
 };
 
@@ -148,8 +204,8 @@ const tools = [
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "add_to_playlist", description: "Add current song to a playlist.",
     inputSchema: { type: "object", properties: { songId: { type: "string" }, playlistId: { type: "string" } }, required: ["playlistId"] } },
-  { name: "playlist_tracks", description: "Get tracks in a playlist.",
-    inputSchema: { type: "object", properties: { playlistId: { type: "string" } }, required: ["playlistId"] } },
+  { name: "playlist_tracks", description: "Get tracks in a playlist. Supports pagination via offset.",
+    inputSchema: { type: "object", properties: { playlistId: { type: "string" }, offset: { type: "number", default: 0 } }, required: ["playlistId"] } },
   { name: "current_song", description: "Get current song info, playback position, and lyrics around current position. AI can see what you're hearing right now.",
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "lyrics", description: "Get full lyrics for the current or specified song.",
@@ -211,7 +267,7 @@ async function execTool(name, args) {
         return `✅ Added to「${t?.name || args.playlistId}」`;
       }
       case "playlist_tracks": {
-        const d = await getPlaylistDetail(args.playlistId);
+        const d = await getPlaylistDetail(args.playlistId, args.offset || 0);
         return JSON.stringify(d);
       }
       case "current_song": {
@@ -260,7 +316,7 @@ async function handleMcpMessage(msg) {
 
 // ─── player HTML ───────────────────────────────────────────
 function playerHtml() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.0 Claude 音乐</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:"SF Pro Display","PingFang SC",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px;box-shadow:0 20px 40px rgba(0,0,0,.5)}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.1 Claude 音乐</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:"SF Pro Display","PingFang SC",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px;box-shadow:0 20px 40px rgba(0,0,0,.5)}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}
 /* progress */
 .progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px;font-variant-numeric:tabular-nums}.time.end{text-align:right}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px;position:relative;overflow:visible}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear;position:relative}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity .15s}.bar-wrap:active .bar-fill::after{opacity:1}
 .controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;stroke-width:2.5;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 测试·3首连播</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
@@ -386,22 +442,42 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Debug: test cookie validity with Netease
+    // Debug: comprehensive API test
     if (path === "/api/debug") {
+      const results = { cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
       try {
-        // Test 1: check cookie existence
-        const cookieLen = COOKIE.length;
-        // Test 2: try to get user playlists (needs auth)
+        // Test 1: search
+        const search = await searchSongs("Justin Bieber", 2);
+        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "" };
+      } catch (e) { results.search = { error: e.message }; }
+      try {
+        // Test 2: playlists
         const pl = await getPlaylists();
-        // Test 3: try to get a song URL
-        let urlTest = "";
-        try { urlTest = await getSongUrl("2652820720") || "(empty)"; } catch(e) { urlTest = "error: "+e.message; }
-        res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ cookieLen, playlistCount: pl.length, urlTest: urlTest.slice(0, 100) }));
-      } catch(e) {
-        res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ error: e.message }));
-      }
+        results.playlists = { ok: true, count: pl.length, names: pl.slice(0, 5).map(p => p.name) };
+      } catch (e) { results.playlists = { error: e.message }; }
+      try {
+        // Test 3: song URL (free song)
+        let url = await getSongUrl("186016");
+        results.songUrl = { ok: !!url, url: (url || "(empty)").slice(0, 80) };
+      } catch (e) { results.songUrl = { error: e.message }; }
+      try {
+        // Test 4: playlist detail (if playlists available)
+        const pl = await getPlaylists();
+        if (pl.length > 0) {
+          const detail = await getPlaylistDetail(pl[0].id);
+          results.playlistDetail = { name: detail.name, trackCount: detail.trackCount, tracksReturned: detail.tracks.length };
+        }
+      } catch (e) { results.playlistDetail = { error: e.message }; }
+      try {
+        // Test 5: add_to_playlist (will show actual error from API)
+        const pl = await getPlaylists();
+        if (pl.length > 0) {
+          await addToPlaylist(pl[0].id, "186016");
+          results.addTest = { ok: true, msg: "add succeeded for test song" };
+        }
+      } catch (e) { results.addTest = { ok: false, error: e.message }; }
+      res.statusCode = 200; res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(results));
       return;
     }
 
