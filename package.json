@@ -1,0 +1,8 @@
+{
+  "name": "netease-music-mcp-cloud",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloud MCP server for NetEase Music — works with Claude web & mobile",
+  "dependencies": {}
+}
