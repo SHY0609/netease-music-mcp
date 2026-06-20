@@ -133,7 +133,7 @@ async function searchSongs(kw, limit = 5) {
     id: String(s.id), name: s.name,
     artist: (s.artists || s.ar || []).map(a => a.name).join(" / "),
     album: (s.album || s.al || {}).name || "",
-    coverUrl: (s.album || s.al || {}).picUrl || "",
+    coverUrl: (s.album || s.al || {}).picUrl || s.picUrl || "",
     durationMs: s.duration || s.dt || 0,
   }));
 }
@@ -281,9 +281,18 @@ async function execTool(name, args) {
         }));
         const pick = checks.find(Boolean);
         if (!pick) return `"${args.keyword}" 的搜索结果无可播放歌曲`;
-        p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
+        // Fallback: try to get cover from song detail if search didn't return one
+        let cover = pick.coverUrl;
+        if (!cover) {
+          try {
+            const detailR = await apiGet(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify([{id:Number(pick.id)}]))}`);
+            const ds = detailR.songs?.[0];
+            if (ds) cover = (ds.al || {}).picUrl || "";
+          } catch {}
+        }
+        p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: cover, durationMs: pick.durationMs, playUrl: "" };
         p.status = "playing";
-        if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift(pick);
+        if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift({ id: pick.id, name: pick.name, artist: pick.artist, coverUrl: cover, durationMs: pick.durationMs });
         mcpTouch(); await saveState();
         return `🎵 ${pick.name} - ${pick.artist}`;
       }
