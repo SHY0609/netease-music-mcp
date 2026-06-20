@@ -273,37 +273,38 @@ async function poll(){try{const r=await fetch("/api/state");if(!r.ok)return;cons
 // Resolve URL (player-initiated, retries on next poll)
 function resolveUrlFor(songId){if(!songId||resolvingUrl===songId)return;resolvingUrl=songId;document.getElementById("status").textContent="🔊 加载音频...";fetch("/api/url?id="+encodeURIComponent(songId)).then(r=>r.json()).then(j=>{if(j.playUrl&&currentId===songId){a.src=j.playUrl;a.play().catch(()=>{});document.getElementById("status").textContent="▶ 播放中"}else if(currentId===songId){document.getElementById("status").textContent="⚠ 无播放链接";}resolvingUrl=null;}).catch(()=>{resolvingUrl=null;document.getElementById("status").textContent="⚠ 加载失败·稍后重试"});}
 function render(d){
-  // Player OWNS the queue. Server only suggests new songs.
+  // Merge new songs from server into local queue (don't overwrite, don't switch)
   if(d.current&&d.current.id){
     var exists=localQueue.some(function(t){return t.id===d.current.id});
-    if(!exists){localQueue.unshift({id:d.current.id,name:d.current.name,artist:d.current.artist,coverUrl:d.current.coverUrl,durationMs:d.current.durationMs});}
+    if(!exists){localQueue.push({id:d.current.id,name:d.current.name,artist:d.current.artist,coverUrl:d.current.coverUrl,durationMs:d.current.durationMs});}
   }
-  // If server has more queue items than we know about, merge them
-  if(d.queue&&d.queue.length>localQueue.length){
+  if(d.queue&&d.queue.length>0){
     for(var i=0;i<d.queue.length;i++){var s=d.queue[i];if(!localQueue.some(function(t){return t.id===s.id})){localQueue.push(s);}}
   }
-  var q=localQueue;
-  // Play current song if changed
-  if(d.current&&d.current.id!==currentId){
+  // Only auto-switch to new song if nothing is playing yet
+  if(!currentId&&d.current&&d.current.id){
     currentId=d.current.id;playerActive=true;
     document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";
     if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});}
     if(d.playUrl){a.src=d.playUrl;a.play().catch(function(){});document.getElementById("status").textContent="▶ 播放中"}else{resolveUrlFor(d.current.id)}
   }
-  // Play icon
-  var pi=document.getElementById("playIcon");
-  var needPlay=a.paused?'<polygon points="6 4 20 12 6 20"/>':'<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>';
-  if(pi.innerHTML.indexOf('points="6 4')<0==a.paused)pi.innerHTML=needPlay;
   // Progress bar
   if(a.duration&&!isNaN(a.duration)){var pct=(a.currentTime/a.duration*100).toFixed(1);document.getElementById("barFill").style.width=pct+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}
-  // Queue — only rebuild if content changed
-  var qStr=q.map(function(t){return t.id}).join(",")+"|"+currentId;
-  if(qStr!==lastQueueStr){lastQueueStr=qStr;var el=document.getElementById("queue");if(!q.length)el.innerHTML='<div class="empty">队列空的 — 让 Claude 给你加歌</div>';else{var h='';for(var i=0;i<q.length;i++){var t=q[i];h+='<div class="queue-item'+(t.id===currentId?' active':'')+'"><img src="'+(t.coverUrl||'')+'" onerror="this.style.display=\\'none\\'"><div class="qi"><div class="qname">'+esc(t.name)+'</div><div class="qart">'+esc(t.artist)+'</div></div></div>';}el.innerHTML=h;}}}
+  // Play icon
+  var pi=document.getElementById("playIcon");
+  pi.innerHTML=a.paused?'<polygon points="6 4 20 12 6 20"/>':'<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>';
+  // Queue display — only rebuild if changed
+  var qStr=localQueue.map(function(t){return t.id}).join(",")+"|"+currentId;
+  if(qStr!==lastQueueStr){lastQueueStr=qStr;var el=document.getElementById("queue");
+    if(!localQueue.length)el.innerHTML='<div class="empty">队列空的</div>';
+    else{var h='';for(var i=0;i<localQueue.length;i++){var t=localQueue[i];h+='<div class="queue-item'+(t.id===currentId?' active':'')+'"><img src="'+(t.coverUrl||'')+'" onerror="this.style.display=\\'none\\'"><div class="qi"><div class="qname">'+esc(t.name)+'</div><div class="qart">'+esc(t.artist)+'</div></div></div>';}el.innerHTML=h;}
+  }}
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 // Controls
 function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}
-function next(){a.pause();var idx=-1;for(var i=0;i<localQueue.length;i++){if(localQueue[i].id===currentId){idx=i;break;}}if(idx>=0&&idx+1<localQueue.length){var nxt=localQueue[idx+1];currentId=nxt.id;document.getElementById("art").src=nxt.coverUrl||"";document.getElementById("name").textContent=nxt.name||"";document.getElementById("artist").textContent=nxt.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:nxt.name,artist:nxt.artist,artwork:[{src:nxt.coverUrl||"",sizes:"300x300"}]});}resolveUrlFor(nxt.id)}else if(idx>=0&&idx===localQueue.length-1){a.currentTime=0;a.play().catch(function(){});document.getElementById("status").textContent="🔁 最后一首·重播中"}else{resolveUrlFor(currentId)}}
-function prev(){a.pause();var idx=-1;for(var i=0;i<localQueue.length;i++){if(localQueue[i].id===currentId){idx=i;break;}}if(idx>0){var prv=localQueue[idx-1];currentId=prv.id;document.getElementById("art").src=prv.coverUrl||"";document.getElementById("name").textContent=prv.name||"";document.getElementById("artist").textContent=prv.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:prv.name,artist:prv.artist,artwork:[{src:prv.coverUrl||"",sizes:"300x300"}]});}resolveUrlFor(prv.id)}else{a.currentTime=0;a.play().catch(function(){});document.getElementById("status").textContent="🔁 第一首·重播中"}}
+function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});}playerActive=true;resolveUrlFor(t.id);document.getElementById("status").textContent="⏭ 切歌中..."}
+function next(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>=0&&idx+1<localQueue.length){playSong(localQueue[idx+1])}else{document.getElementById("status").textContent="✅ 队列播完"}}
+function prev(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>0){playSong(localQueue[idx-1])}else if(localQueue.length>0){playSong(localQueue[0]);document.getElementById("status").textContent="🔁 第一首"}}
 // Progress bar click to seek
 document.getElementById("barWrap").addEventListener("click",function(e){if(!a.duration||isNaN(a.duration))return;const rect=this.getBoundingClientRect();const pct=(e.clientX-rect.left)/rect.width;a.currentTime=Math.max(0,Math.min(a.duration,pct*a.duration))});
 // Audio events
@@ -316,7 +317,7 @@ setInterval(poll,2000);poll();
 // Report playback time to server every 3s (so AI knows where you are)
 setInterval(()=>{if(a.currentTime&&!a.paused)fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({time:a.currentTime})}).catch(()=>{})},3000);
 // Quick test button — simulates Claude calling "play"
-document.getElementById("testBtn").addEventListener("click",function(){var btn=this;btn.textContent="加载第1首...";btn.disabled=true;var songs=["修炼爱情","不为谁而作的歌","可惜没如果"];var done=0;function addOne(i){if(i>=songs.length){btn.textContent="✅ 3首已加入·刷新页面";btn.disabled=false;setTimeout(poll,500);return;}btn.textContent="加载第"+(i+1)+"首...";fetch("/api/mcp",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:90+i,method:"tools/call",params:{name:"play",arguments:{keyword:songs[i]}}})}).then(function(r){return r.json()}).then(function(j){done++;btn.textContent="✅ "+done+"/3";setTimeout(function(){addOne(i+1)},300)}).catch(function(){btn.textContent="❌ 失败·重试";btn.disabled=false})}addOne(0)});
+document.getElementById("testBtn").addEventListener("click",function(){var btn=this;btn.textContent="加载第1首...";btn.disabled=true;var songs=["修炼爱情","不为谁而作的歌","可惜没如果"];var done=0;function addOne(i){if(i>=songs.length){btn.textContent="✅ 3首已加入·刷新页面";btn.disabled=false;setTimeout(poll,500);return;}btn.textContent="加载第"+(i+1)+"首...";fetch("/api/mcp",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:90+i,method:"tools/call",params:{name:"play",arguments:{keyword:songs[i]}}})}).then(function(r){return r.json()}).then(function(j){done++;btn.textContent="✅ "+done+"/3";setTimeout(function(){addOne(i+1)},1000)}).catch(function(){btn.textContent="❌ 失败·重试";btn.disabled=false})}addOne(0)});
 
 </script></body></html>`;
 }
