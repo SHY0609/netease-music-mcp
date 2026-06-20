@@ -23,21 +23,31 @@ function getPlayer() {
 // Player syncs its full state → server updates from player (authoritative)
 function mergeFromPlayer(data) {
   if (!data) return;
-  if (data.time !== undefined) _state.currentTime = Number(data.time) || 0;
   if (data.songId) {
     // Player has a song playing — ensure server state reflects it
-    if (!_state.current || _state.current.id !== data.songId) {
+    const songChanged = !_state.current || _state.current.id !== data.songId;
+    if (songChanged) {
       _state.current = {
         id: data.songId,
-        name: data.name || _state.current?.name || "Unknown",
-        artist: data.artist || _state.current?.artist || "",
-        album: data.album || _state.current?.album || "",
-        coverUrl: data.coverUrl || _state.current?.coverUrl || "",
-        durationMs: data.durationMs || _state.current?.durationMs || 0,
-        playUrl: data.playUrl || _state.current?.playUrl || "",
+        name: data.name || "Unknown",
+        artist: data.artist || "",
+        album: data.album || "",
+        coverUrl: data.coverUrl || "",
+        durationMs: data.durationMs || 0,
+        playUrl: data.playUrl || "",
       };
+      // Reset time when song changes (player sends 0 for new song)
+      _state.currentTime = 0;
+      // Clear lyrics cache so it re-fetches for new song
+      _state.lyrics = null;
+    } else if (data.time !== undefined) {
+      // Same song — update time from player
+      _state.currentTime = Number(data.time) || 0;
     }
     if (!_state.status || _state.status === "idle") _state.status = "playing";
+  } else if (data.time !== undefined) {
+    // No songId in sync data — just update time for current song
+    _state.currentTime = Number(data.time) || 0;
   }
   // Merge queue from player
   if (data.queue && Array.isArray(data.queue) && data.queue.length > 0) {
@@ -189,17 +199,28 @@ async function getPlaylistDetail(id, offset = 0) {
 }
 
 async function addToPlaylist(pid, songId) {
-  // Write operations need POST to old API
-  // trackIds MUST be JSON array format: "[123456]" or "[123456,789012]"
-  const trackIds = `[${String(songId)}]`;
-  const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
-    method: "POST",
-    headers: { ...H, "content-type": "application/x-www-form-urlencoded" },
-    body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(trackIds)}`,
-  });
-  const r = await res.json();
-  if (r.code !== 200) throw new Error(r.message || r.msg || `add failed (code=${r.code})`);
-  return true;
+  // Old API: try multiple formats since exact format is undocumented
+  const formats = [
+    { label: "jsonArray", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(`[${String(songId)}]`)}` },
+    { label: "plainNum", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(String(songId))}` },
+    { label: "paramTracks", body: `op=add&pid=${encodeURIComponent(pid)}&tracks=${encodeURIComponent(String(songId))}` },
+  ];
+  let lastErr = "";
+  for (const fmt of formats) {
+    try {
+      const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
+        method: "POST",
+        headers: { ...H, "content-type": "application/x-www-form-urlencoded" },
+        body: fmt.body,
+      });
+      const r = await res.json();
+      if (r.code === 200) return true;
+      lastErr = `${fmt.label}: ${r.message || r.msg || `code=${r.code}`}`;
+    } catch (e) {
+      lastErr = `${fmt.label}: ${e.message}`;
+    }
+  }
+  throw new Error(lastErr || "add failed");
 }
 
 // ─── MCP (lightweight JSON‑RPC) ────────────────────────────
@@ -208,7 +229,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.3.0" },
+  serverInfo: { name: "netease-music", version: "1.3.1" },
   capabilities: { tools: {} },
 };
 
@@ -378,7 +399,8 @@ function render(d){
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 // Controls
 function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause();}
-function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});}playerActive=true;resolveUrlFor(t.id);document.getElementById("status").textContent="⏭ 切歌中..."}
+function syncNow(){var s={time:a.currentTime||0};if(currentId){var sc=localQueue.find(function(t){return t.id===currentId});s.songId=currentId;if(sc){s.name=sc.name;s.artist=sc.artist;s.coverUrl=sc.coverUrl;s.durationMs=sc.durationMs;s.album=sc.album}s.queue=localQueue.slice(0,20).map(function(t){return {id:t.id,name:t.name,artist:t.artist,coverUrl:t.coverUrl,durationMs:t.durationMs}})}fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(s)}).catch(function(){})}
+function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});}playerActive=true;resolveUrlFor(t.id);document.getElementById("status").textContent="⏭ 切歌中...";setTimeout(function(){syncNow()},500)}
 function next(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>=0&&idx+1<localQueue.length){playSong(localQueue[idx+1])}else{document.getElementById("status").textContent="✅ 队列播完"}}
 function prev(){a.pause();var idx=localQueue.findIndex(function(t){return t.id===currentId});if(idx>0){playSong(localQueue[idx-1])}else if(localQueue.length>0){playSong(localQueue[0]);document.getElementById("status").textContent="🔁 第一首"}}
 // Progress bar click to seek
