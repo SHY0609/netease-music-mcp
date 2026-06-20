@@ -16,17 +16,26 @@ async function apiGet(path) {
 }
 
 // ─── player state (in-memory; player syncs full state every 3s as backup) ──
-let _state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null };
+let _state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 };
 function getPlayer() {
   return _state;
+}
+// Mark state as recently set by MCP — player sync won't overwrite for 6s
+function mcpTouch() {
+  _state._mcpSetAt = Date.now();
 }
 // Player syncs its full state → server updates from player (authoritative)
 function mergeFromPlayer(data) {
   if (!data) return;
   if (data.songId) {
-    // Player has a song playing — ensure server state reflects it
+    // Don't let player sync overwrite a recent MCP-set song (avoid feedback loop)
+    const mcpRecent = (Date.now() - _state._mcpSetAt) < 6000;
     const songChanged = !_state.current || _state.current.id !== data.songId;
-    if (songChanged) {
+    if (mcpRecent && songChanged && _state.current?.id) {
+      // MCP just set a different song — keep MCP's choice, but update time
+      if (data.time !== undefined) _state.currentTime = Number(data.time) || 0;
+      // Still merge queue but don't overwrite current song
+    } else if (songChanged) {
       _state.current = {
         id: data.songId,
         name: data.name || "Unknown",
@@ -36,17 +45,13 @@ function mergeFromPlayer(data) {
         durationMs: data.durationMs || 0,
         playUrl: data.playUrl || "",
       };
-      // Reset time when song changes (player sends 0 for new song)
       _state.currentTime = 0;
-      // Clear lyrics cache so it re-fetches for new song
       _state.lyrics = null;
     } else if (data.time !== undefined) {
-      // Same song — update time from player
       _state.currentTime = Number(data.time) || 0;
     }
     if (!_state.status || _state.status === "idle") _state.status = "playing";
   } else if (data.time !== undefined) {
-    // No songId in sync data — just update time for current song
     _state.currentTime = Number(data.time) || 0;
   }
   // Merge queue from player
@@ -201,11 +206,11 @@ async function getPlaylistDetail(id, offset = 0) {
 async function addToPlaylist(pid, songId) {
   // Old API: try multiple formats since exact format is undocumented
   const formats = [
-    { label: "jsonArray", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(`[${String(songId)}]`)}` },
-    { label: "plainNum", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(String(songId))}` },
-    { label: "paramTracks", body: `op=add&pid=${encodeURIComponent(pid)}&tracks=${encodeURIComponent(String(songId))}` },
+    { label: "A_jsonArr", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(`[${String(songId)}]`)}` },
+    { label: "B_plainId", body: `op=add&pid=${encodeURIComponent(pid)}&trackIds=${encodeURIComponent(String(songId))}` },
+    { label: "C_tracks", body: `op=add&pid=${encodeURIComponent(pid)}&tracks=${encodeURIComponent(String(songId))}` },
   ];
-  let lastErr = "";
+  const results = [];
   for (const fmt of formats) {
     try {
       const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
@@ -215,12 +220,13 @@ async function addToPlaylist(pid, songId) {
       });
       const r = await res.json();
       if (r.code === 200) return true;
-      lastErr = `${fmt.label}: ${r.message || r.msg || `code=${r.code}`}`;
+      results.push(`${fmt.label}: code=${r.code} msg=${r.message || r.msg || "none"}`);
     } catch (e) {
-      lastErr = `${fmt.label}: ${e.message}`;
+      results.push(`${fmt.label}: fetchErr=${e.message}`);
     }
   }
-  throw new Error(lastErr || "add failed");
+  // Return all results so we can see which format got closest
+  throw new Error(`add_to_playlist failed pid=${pid} sid=${songId} | ${results.join(" | ")}`);
 }
 
 // ─── MCP (lightweight JSON‑RPC) ────────────────────────────
@@ -229,7 +235,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "netease-music", version: "1.3.1" },
+  serverInfo: { name: "netease-music", version: "1.3.2" },
   capabilities: { tools: {} },
 };
 
@@ -270,20 +276,21 @@ async function execTool(name, args) {
         p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
         p.status = "playing";
         if (!p.queue.find(q => q.id === pick.id)) p.queue.unshift(pick);
+        mcpTouch();
         return `🎵 ${pick.name} - ${pick.artist}`;
       }
       case "skip":
         if (p.queue.length > 1) {
           p.queue.shift(); p.current = p.queue[0]; p.current.playUrl = "";
           p.status = "playing";
-  
+          mcpTouch();
           return `⏭ ${p.current.name} - ${p.current.artist}`;
         }
         if (p.current?.id) {
           // Replay current from start
           p.status = "playing";
           p.current.playUrl = "";
-  
+          mcpTouch();
           return `🔄 Replaying ${p.current.name} - ${p.current.artist}`;
         }
         p.status = "idle";
@@ -357,10 +364,10 @@ async function handleMcpMessage(msg) {
 
 // ─── player HTML ───────────────────────────────────────────
 function playerHtml() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.1 Claude 音乐</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:"SF Pro Display","PingFang SC",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px;box-shadow:0 20px 40px rgba(0,0,0,.5)}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><meta name="referrer" content="no-referrer"/><title>🎵 v2.3 Claude 音乐</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:"SF Pro Display","PingFang SC",system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px;box-shadow:0 20px 40px rgba(0,0,0,.5)}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}
 /* progress */
 .progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px;font-variant-numeric:tabular-nums}.time.end{text-align:right}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px;position:relative;overflow:visible}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear;position:relative}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0;transition:opacity .15s}.bar-wrap:active .bar-fill::after{opacity:1}
-.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;stroke-width:2.5;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 测试·3首连播</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
+.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;stroke-width:2.5;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude 音乐</h1><div class="sub">v1.3.2 · 跟 Claude 说"放一首歌"试试<br><button id="testBtn" style="margin-top:8px;padding:8px 16px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:13px;cursor:pointer">🧪 测试·3首连播</button></div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
 const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[],playerActive=false;
 function fm(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec}
 // Media Session
@@ -484,7 +491,7 @@ export default async function handler(req, res) {
 
     // Debug: comprehensive API test
     if (path === "/api/debug") {
-      const results = { cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
+      const results = { version: "1.3.2", cookieLen: COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
       try {
         // Test 1: search
         const search = await searchSongs("Justin Bieber", 2);
