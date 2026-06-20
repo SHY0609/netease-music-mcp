@@ -127,13 +127,25 @@ async function getLyricsRaw(id) {
   } catch { return ""; }
 }
 
+function extractCover(s) {
+  // Try direct picUrl from album or song
+  const direct = (s.album || s.al || {}).picUrl || s.picUrl;
+  if (direct) return direct;
+  // Construct from pic_id + pic_str: https://p2.music.126.net/<str>/<id>.jpg
+  const al = s.album || s.al || {};
+  const picId = al.pic || al.picId || s.picId || al.pic_id;
+  const picStr = al.pic_str || al.picUrl_str || s.pic_str;
+  if (picId && picStr) return `https://p2.music.126.net/${picStr}/${picId}.jpg`;
+  if (picId) return `https://p2.music.126.net/${picId}.jpg`;
+  return "";
+}
 async function searchSongs(kw, limit = 5) {
   const r = await apiGet(`/api/search/get?s=${encodeURIComponent(kw)}&type=1&limit=${limit}`);
   return (r.result?.songs || []).map(s => ({
     id: String(s.id), name: s.name,
     artist: (s.artists || s.ar || []).map(a => a.name).join(" / "),
     album: (s.album || s.al || {}).name || "",
-    coverUrl: (s.album || s.al || {}).picUrl || s.picUrl || "",
+    coverUrl: extractCover(s),
     durationMs: s.duration || s.dt || 0,
   }));
 }
@@ -281,13 +293,13 @@ async function execTool(name, args) {
         }));
         const pick = checks.find(Boolean);
         if (!pick) return `"${args.keyword}" 的搜索结果无可播放歌曲`;
-        // Fallback: try to get cover from song detail if search didn't return one
+        // Fallback: try song detail API if search didn't return cover
         let cover = pick.coverUrl;
         if (!cover) {
           try {
             const detailR = await apiGet(`/api/v3/song/detail?c=${encodeURIComponent(JSON.stringify([{id:Number(pick.id)}]))}`);
             const ds = detailR.songs?.[0];
-            if (ds) cover = (ds.al || {}).picUrl || "";
+            if (ds) cover = extractCover(ds) || (ds.al || {}).picUrl || "";
           } catch {}
         }
         p.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: cover, durationMs: pick.durationMs, playUrl: "" };
