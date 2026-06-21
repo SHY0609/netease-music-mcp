@@ -240,7 +240,9 @@ async function getPlaylistDetail(id, offset = 0) {
 
 
 // ─── meituan helpers — best-effort real API, graceful mock fallback ──
-const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", "Accept": "application/json" };
+const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", "Accept": "application/json", "Origin": "https://h5.waimai.meituan.com" };
+// mtgsig session constant (a6) — reused across requests within same browser session
+const MT_A6 = "h1.9M19760dyGWL/3w+pNvuzQoYFMXMGT1brMiHhRvFHmef5MQx4w9xKM2PN9CC+4DiYbtgUU59JD5XQBvbWlikqiRI+2G74ViYXR7Bej6zpB22iRY2AxitkbLoxVx9/kIXLXhVKxbPXyvAu6dWmGDlBbwHWqDFa+2rVn81Dcab9ADX1a1xJWAs7qgt+Yny3K4iQnswb4dpRt6/7IspMwXfyt9y5uJRhvsSKGEwkXAAtSMC0KP+RVhA9YmC2yHhUpxDs9gmPpG62+9D7hmjaNmpbGpAOjwowWBJDBE9Nhez9uart1cNpoiMzHoRb10umq5hhubTjND938Vx5T9/hXPLDurfIYSiQqHYnHFrGfoto3KsAsU8SmAQxwM0Ya8xRSJkoet/G5gozImRhYfeTWUtfZ9DZHzBYP0BVMhNYGzQ9hkLJPiX7T3qWdKZ9/MpjpMQFksu05zpfoOyjDUBDISwftEbAwaKp5n7wdcvdDrIZxmQjX6Q7k5qHBMuSP7TXqZXUixuvQlSSyxmOIR8J80w2oQ==";
 
 function mtDiagnose(result, cookiePresent) {
   if (!cookiePresent) return "no_cookie";
@@ -255,8 +257,11 @@ function mtDiagnose(result, cookiePresent) {
 async function mtApi(path, opts) {
   if (!MT_COOKIE) return null;
   try {
+    // mtgsig: a6 is session-constant, a2 is timestamp, a8/d1 need generation (TODO: lib/meituan.js)
+    const ts = Date.now();
+    const mtgsig = JSON.stringify({ a1: "1.2", a2: ts, a3: "v2wyzwv56vxw5yxwyx5vywx40z24928z80vvy6z045197958360v11v0", a5: "", a6: MT_A6, a8: "", a9: "4.2.4,7,24", a10: "9f", x0: 4, d1: "" });
     const url = "https://i.waimai.meituan.com" + path;
-    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE }, ...opts });
+    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE, mtgsig: mtgsig }, ...opts });
     const text = await res.text();
     try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
     catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
@@ -265,8 +270,8 @@ async function mtApi(path, opts) {
 
 async function mtSearch(keyword, lat, lng) {
   const hasCookie = !!MT_COOKIE;
-  const params = new URLSearchParams({ keyword, lat: lat || "39.9", lng: lng || "116.4", page: "1" });
-  const result = await mtApi("/openh5/poi/filter?" + params);
+  const params = new URLSearchParams({ keyword, lat: lat || "28.673167", lng: lng || "115.887078", page: "1" });
+  const result = await mtApi("/openapi/v1/poi/food?" + params);
   const reason = mtDiagnose(result, hasCookie);
 
   if (reason) {
