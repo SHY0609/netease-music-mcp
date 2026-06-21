@@ -239,31 +239,52 @@ async function getPlaylistDetail(id, offset = 0) {
 }
 
 
-// ─── meituan helpers (stubs — fill in after packet capture) ──
-const MT_HEADERS = { "User-Agent": UA, "Referer": "https://i.meituan.com/", cookie: MT_COOKIE };
+// ─── meituan helpers — H5 API (testing, may need _token signing) ──
+const MT_HEADERS = { "User-Agent": UA, "Referer": "https://i.meituan.com/", cookie: MT_COOKIE, "Accept": "application/json" };
 
-async function mtApi(path) {
+async function mtApi(path, opts) {
   if (!MT_COOKIE) throw new Error("MEITUAN_COOKIE not set in Vercel env");
-  const res = await fetch(`https://i.meituan.com${path}`, { headers: MT_HEADERS });
-  if (!res.ok) throw new Error(`Meituan HTTP ${res.status}`);
+  const url = "https://i.meituan.com" + path;
+  const res = await fetch(url, { headers: MT_HEADERS, ...opts });
   const text = await res.text();
-  try { return JSON.parse(text); } catch { throw new Error(`Meituan non-JSON: ${text.slice(0, 200)}`); }
+  try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
+  catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
 }
 
 async function mtSearch(keyword, lat, lng) {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
+  const params = new URLSearchParams({ keyword, lat: lat || "39.9", lng: lng || "116.4", page: "1" });
+  const result = await mtApi("/openh5/homepage/poilist?" + params);
+  if (!result.ok) throw new Error("搜索失败 HTTP" + result.status + ": " + (result.raw || JSON.stringify(result.data)));
+  const shops = (result.data?.data || result.data?.poiList || []).map(function(s) { return {
+    id: String(s.poiId || s.id || ""), name: s.name || s.poiName || "",
+    addr: s.address || s.addr || "", score: s.wm_poi_score || s.score || "",
+    deliveryTime: s.delivery_time || s.wm_poi_delivery_time || "",
+  }});
+  return { keyword: keyword, count: shops.length, shops: shops.slice(0, 10) };
 }
 
 async function mtGetAddresses() {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
+  const result = await mtApi("/openh5/address/list");
+  if (!result.ok) throw new Error("获取地址失败 HTTP" + result.status + ": " + (result.raw || ""));
+  const addrs = (result.data?.data || result.data?.addressList || []).map(function(a) { return {
+    id: String(a.id || a.addressId || ""), name: a.name || a.tag || "",
+    addr: a.address || a.fullAddr || "", phone: a.phone || "",
+  }});
+  if (!addrs.length) throw new Error("未找到地址，请先在美团App添加收货地址");
+  return { count: addrs.length, addresses: addrs };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
+  const result = await mtApi("/openh5/order/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ poiId: shopId, itemId: itemId, addressId: addressId, quantity: quantity || 1 }),
+  });
+  if (!result.ok) throw new Error("下单失败 HTTP" + result.status + ": " + (result.raw || JSON.stringify(result.data)));
+  const payUrl = result.data?.data?.payUrl || result.data?.pay_url || "";
+  return payUrl;
 }
+
 async function addToPlaylist(pid, songId) {
   // trackIds MUST be JSON array format: "[123456]" — verified 2025-06-20
   const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
