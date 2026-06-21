@@ -255,10 +255,13 @@ async function mtSearch(keyword, lat, lng) {
   const params = new URLSearchParams({ keyword, lat: lat || "39.9", lng: lng || "116.4", page: "1" });
   const result = await mtApi("/openh5/homepage/poilist?" + params);
   if (!result.ok) throw new Error("搜索失败 HTTP" + result.status + ": " + (result.raw || JSON.stringify(result.data)));
-  const shops = (result.data?.data || result.data?.poiList || []).map(function(s) { return {
+  // Defensive: data might be in various shapes from Meituan
+  const raw = result.data;
+  const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.poiList) ? raw.poiList : Array.isArray(raw) ? raw : [];
+  if (!list.length) throw new Error("美团返回数据为空或格式异常: " + JSON.stringify(raw).slice(0, 300));
+  const shops = list.map(function(s) { return {
     id: String(s.poiId || s.id || ""), name: s.name || s.poiName || "",
     addr: s.address || s.addr || "", score: s.wm_poi_score || s.score || "",
-    deliveryTime: s.delivery_time || s.wm_poi_delivery_time || "",
   }});
   return { keyword: keyword, count: shops.length, shops: shops.slice(0, 10) };
 }
@@ -266,11 +269,13 @@ async function mtSearch(keyword, lat, lng) {
 async function mtGetAddresses() {
   const result = await mtApi("/openh5/address/list");
   if (!result.ok) throw new Error("获取地址失败 HTTP" + result.status + ": " + (result.raw || ""));
-  const addrs = (result.data?.data || result.data?.addressList || []).map(function(a) { return {
+  const raw = result.data;
+  const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.addressList) ? raw.addressList : Array.isArray(raw) ? raw : [];
+  const addrs = list.map(function(a) { return {
     id: String(a.id || a.addressId || ""), name: a.name || a.tag || "",
     addr: a.address || a.fullAddr || "", phone: a.phone || "",
   }});
-  if (!addrs.length) throw new Error("未找到地址，请先在美团App添加收货地址");
+  if (!addrs.length) throw new Error("未找到地址。原始返回: " + JSON.stringify(raw).slice(0, 200));
   return { count: addrs.length, addresses: addrs };
 }
 
