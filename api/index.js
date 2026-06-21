@@ -240,11 +240,11 @@ async function getPlaylistDetail(id, offset = 0) {
 
 
 // ─── meituan helpers — H5 API (testing, may need _token signing) ──
-const MT_HEADERS = { "User-Agent": UA, "Referer": "https://i.meituan.com/", cookie: MT_COOKIE, "Accept": "application/json" };
+const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", cookie: MT_COOKIE, "Accept": "application/json" };
 
 async function mtApi(path, opts) {
   if (!MT_COOKIE) throw new Error("MEITUAN_COOKIE not set in Vercel env");
-  const url = "https://i.meituan.com" + path;
+  const url = "https://i.waimai.meituan.com" + path;
   const res = await fetch(url, { headers: MT_HEADERS, ...opts });
   const text = await res.text();
   try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
