@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { BG_IMAGE } from "../lib/bg.js";
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
-const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const REF = "https://music.163.com/";
 const H = { "User-Agent": UA, "Referer": REF, cookie: COOKIE };
@@ -238,32 +237,6 @@ async function getPlaylistDetail(id, offset = 0) {
   return { name: p.name || "(unnamed)", trackCount: p.trackCount || tracks.length, tracks };
 }
 
-
-// ─── meituan helpers (stubs — fill in after packet capture) ──
-const MT_HEADERS = { "User-Agent": UA, "Referer": "https://i.meituan.com/", cookie: MT_COOKIE };
-
-async function mtApi(path) {
-  if (!MT_COOKIE) throw new Error("MEITUAN_COOKIE not set in Vercel env");
-  const res = await fetch(`https://i.meituan.com${path}`, { headers: MT_HEADERS });
-  if (!res.ok) throw new Error(`Meituan HTTP ${res.status}`);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { throw new Error(`Meituan non-JSON: ${text.slice(0, 200)}`); }
-}
-
-async function mtSearch(keyword, lat, lng) {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
-}
-
-async function mtGetAddresses() {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
-}
-
-async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
-  // TODO: replace with real API after packet capture
-  throw new Error("Meituan API not yet configured — need to capture real endpoints via packet trace");
-}
 async function addToPlaylist(pid, songId) {
   // trackIds MUST be JSON array format: "[123456]" — verified 2025-06-20
   const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
@@ -282,7 +255,7 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "home", version: "2.0.0" },
+  serverInfo: { name: "netease-music", version: "1.5.0" },
   capabilities: { tools: {} },
 };
 
@@ -301,12 +274,6 @@ const tools = [
     inputSchema: { type: "object", properties: { songId: { type: "string" }, playlistId: { type: "string" } }, required: ["playlistId"] } },
   { name: "playlist_tracks", description: "Get tracks in a playlist. Supports pagination via offset.",
     inputSchema: { type: "object", properties: { playlistId: { type: "string" }, offset: { type: "number", default: 0 } }, required: ["playlistId"] } },
-  { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery, etc.)",
-    inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
-  { name: "mt_addresses", description: "Get your saved delivery addresses from Meituan.",
-    inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "mt_order", description: "Create an order on Meituan. Returns payment link.",
-    inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 } }, required: ["shopId", "itemId", "addressId"] } },
   { name: "current_song", description: "Get current song info, playback position, and lyrics around current position. AI can see what you're hearing right now.",
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "lyrics", description: "Get full lyrics for the current or specified song.",
@@ -379,19 +346,6 @@ async function execTool(name, args) {
       case "playlist_tracks": {
         const d = await getPlaylistDetail(args.playlistId, args.offset || 0);
         return JSON.stringify(d);
-      }
-      case "mt_search": {
-        const result = await mtSearch(args.keyword, args.lat, args.lng);
-        return JSON.stringify(result);
-      }
-      case "mt_addresses": {
-        const addrs = await mtGetAddresses();
-        return JSON.stringify(addrs);
-      }
-      case "mt_order": {
-        const payUrl = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1);
-        const msg = payUrl ? "🛒 订单已生成！点这个链接付款：" + payUrl : "🛒 订单已生成！请手动打开美团App支付";
-        return msg;
       }
       case "current_song": {
         if (!p.current) return "No song playing";
