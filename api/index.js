@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BG_IMAGE } from "../lib/bg.js";
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
-const MT_COOKIE = process.env.MEITUAN_COOKIE || "userId=4572102944; _hc.v=f6c38188-81ee-f708-e58a-feb002b5fd1e.1758859667; ci=70; _lxsdk=00000000000005695123893D844EFA00031477F296F92A172195826620921199; _lxsdk_cuid=1923810996fc8-0f7500e7826fd2-27037f7f-505c8-1923810996fc8; _lxsdk_dpid=5695123893d844efa00031477f296f92a172195826620921199; _lxsdk_unoinid=2cfe2c9d47064b3394fe060f4a20b4e0a172195826206631990; lt=AgEOImHmnR8MVMCqCl3_dfd_hJ57cthnNthJfto9CNRHnr7a5lHg3RwCcqGJ_wAJssVJAMTdNrkkQAYAAADmLwAALF-wZ2IQxuy_qbu-8gJISoo3yH1mXijeU2gQkMMwP-vWLfKKDFa8Ue2yUeAvJrx7; n=QzQ341739781; NDFPID=6414559805ba996e9ff4d0ae24087e47ad89fab8d724084046f0475a; ta.uuid=2045712391396876302; utm_source_rg=AM%2522-jdj3%25307%25Ui7nwxaignqr9xr7wznz5tUCazatq5tazgC9xnxxxw7zJi9ziqxitx5z; isUuidUnion=true; iuuid=00000000000005695123893D844EFA00031477F296F92A172195826620921199; mt_c_token=AgHoJs7YfUnkq6VEQXyLEAMpkO8UO3O49sgvP8Y0dRF4rETL7DwTjAWuAzzHEDT94SYynRUM64amUhEAAADDNQAAW1wU9nBSkIiOnOuWd1KxuJHYEcqCxTPgZTq9Rz-bNkeCaHqnxEnFJG-zh-BhIxomlCgp68TPBhGK1AAPXifvLA; wink_strategy_key=%7B%2231824%22%3A%22i%22%2C%2233442%22%3A%22strategy_a%22%2C%2240403%22%3A%22strategy_a%22%2C%2246502%22%3A%22strategy_a%22%2C%2250999%22%3A%22defaultStrategyKey%22%2C%2238443%22%3A%22a%22%2C%2225934%22%3A%22a%22%7D; _utm_campaign=AgroupBgroupD100Ghomepage_searchH0; _utm_content=00000000000005695123893D844EFA00031477F296F92A172195826620921199; _utm_medium=iphone; _utm_source=AppStore; _utm_term=12.52.403; cityid=83; network=5g; token=AgHoJs7YfUnkq6VEQXyLEAMpkO8UO3O49sgvP8Y0dRF4rETL7DwTjAWuAzzHEDT94SYynRUM64amUhEAAADDNQAAW1wU9nBSkIiOnOuWd1KxuJHYEcqCxTPgZTq9Rz-bNkeCaHqnxEnFJG-zh-BhIxomlCgp68TPBhGK1AAPXifvLA; uuid=00000000000005695123893D844EFA00031477F296F92A172195826620921199; WEBDFPID=29361z4906yx5zx31868uw2v484wyuw480v5z6zzz13879589yz9wzu8-1780389096845-1779361817643SMCMUQC868c0ee73ab28e1d0b03bc83148500064874; _lx_utm=utm_campaign%3DAgroupBgroupG%26utm_term%3D12.52.403%26utm_source%3DAppStore%26utm_content%3D00000000000005695123893D844EFA00031477F296F92A172195826620921199%26utm_medium%3Diphone; _lxsdk_s=19eeafbf7ee-85f-f4-ee1%7C4572102944%7CNaN";
+const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const REF = "https://music.163.com/";
 const H = { "User-Agent": UA, "Referer": REF, cookie: COOKIE };
@@ -239,55 +239,97 @@ async function getPlaylistDetail(id, offset = 0) {
 }
 
 
-// ─── meituan helpers — H5 API (testing, may need _token signing) ──
-const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", cookie: MT_COOKIE, "Accept": "application/json" };
+// ─── meituan helpers — best-effort real API, graceful mock fallback ──
+const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", "Accept": "application/json" };
+
+function mtDiagnose(result, cookiePresent) {
+  if (!cookiePresent) return "no_cookie";
+  if (!result) return "no_response";
+  if (result.status === 403) return "upstream_403";
+  if (result.status === 404) return "endpoint_404";
+  if (result.status !== 200) return "http_" + result.status;
+  if (!result.data || result.data.code !== 0) return "empty_payload";
+  return null; // success
+}
 
 async function mtApi(path, opts) {
-  if (!MT_COOKIE) throw new Error("MEITUAN_COOKIE not set in Vercel env");
-  const url = "https://i.waimai.meituan.com" + path;
-  const res = await fetch(url, { headers: MT_HEADERS, ...opts });
-  const text = await res.text();
-  try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
-  catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
+  if (!MT_COOKIE) return null;
+  try {
+    const url = "https://i.waimai.meituan.com" + path;
+    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE }, ...opts });
+    const text = await res.text();
+    try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
+    catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
+  } catch (e) { return null; }
 }
 
 async function mtSearch(keyword, lat, lng) {
+  const hasCookie = !!MT_COOKIE;
   const params = new URLSearchParams({ keyword, lat: lat || "39.9", lng: lng || "116.4", page: "1" });
-  const result = await mtApi("/openh5/homepage/poilist?" + params);
-  if (!result.ok) throw new Error("搜索失败 HTTP" + result.status + ": " + (result.raw || JSON.stringify(result.data)));
-  // Defensive: data might be in various shapes from Meituan
+  const result = await mtApi("/openh5/poi/filter?" + params);
+  const reason = mtDiagnose(result, hasCookie);
+
+  if (reason) {
+    return {
+      source: "mock_fallback",
+      reason: reason,
+      keyword: keyword,
+      shops: [{ id: "mock_1", name: "（模拟）附近的奶茶店", addr: "需要配置 MEITUAN_COOKIE + mtgsig 签名才能获取真实菜单" }],
+      hint: "美团接口当前不可用（" + reason + "）。可通过网页版 https://h5.waimai.meituan.com 手动查看。"
+    };
+  }
+
   const raw = result.data;
   const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.poiList) ? raw.poiList : Array.isArray(raw) ? raw : [];
-  if (!list.length) throw new Error("美团返回数据为空或格式异常: " + JSON.stringify(raw).slice(0, 300));
   const shops = list.map(function(s) { return {
     id: String(s.poiId || s.id || ""), name: s.name || s.poiName || "",
     addr: s.address || s.addr || "", score: s.wm_poi_score || s.score || "",
   }});
-  return { keyword: keyword, count: shops.length, shops: shops.slice(0, 10) };
+  return { source: "real", keyword: keyword, count: shops.length, shops: shops.slice(0, 10) };
 }
 
 async function mtGetAddresses() {
+  const hasCookie = !!MT_COOKIE;
   const result = await mtApi("/openh5/address/list");
-  if (!result.ok) throw new Error("获取地址失败 HTTP" + result.status + ": " + (result.raw || ""));
+  const reason = mtDiagnose(result, hasCookie);
+
+  if (reason) {
+    return {
+      source: "mock_fallback",
+      reason: reason,
+      addresses: [{ id: "mock_addr", name: "（模拟）家", addr: "需要 mtgsig 签名才能获取真实地址" }],
+      hint: "当前返回模拟地址。请在美团 App 设置真实地址后重试。"
+    };
+  }
+
   const raw = result.data;
   const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.addressList) ? raw.addressList : Array.isArray(raw) ? raw : [];
   const addrs = list.map(function(a) { return {
     id: String(a.id || a.addressId || ""), name: a.name || a.tag || "",
     addr: a.address || a.fullAddr || "", phone: a.phone || "",
   }});
-  if (!addrs.length) throw new Error("未找到地址。原始返回: " + JSON.stringify(raw).slice(0, 200));
-  return { count: addrs.length, addresses: addrs };
+  return { source: "real", count: addrs.length, addresses: addrs };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
+  const hasCookie = !!MT_COOKIE;
   const result = await mtApi("/openh5/order/create", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ poiId: shopId, itemId: itemId, addressId: addressId, quantity: quantity || 1 }),
   });
-  if (!result.ok) throw new Error("下单失败 HTTP" + result.status + ": " + (result.raw || JSON.stringify(result.data)));
-  const payUrl = result.data?.data?.payUrl || result.data?.pay_url || "";
-  return payUrl;
+  const reason = mtDiagnose(result, hasCookie);
+
+  if (reason) {
+    return {
+      source: "mock_fallback",
+      reason: reason === "empty_payload" ? "mtgsig_required" : reason,
+      payUrl: "",
+      hint: "下单需要 mtgsig 签名，当前未实现。请手动在美团 App 完成支付。"
+    };
+  }
+
+  return { source: "real", payUrl: result.data?.data?.payUrl || result.data?.pay_url || "" };
 }
 
 async function addToPlaylist(pid, songId) {
@@ -415,8 +457,9 @@ async function execTool(name, args) {
         return JSON.stringify(addrs);
       }
       case "mt_order": {
-        const payUrl = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1);
-        const msg = payUrl ? "🛒 订单已生成！点这个链接付款：" + payUrl : "🛒 订单已生成！请手动打开美团App支付";
+        const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1);
+        if (order.source === "mock_fallback") return JSON.stringify(order);
+        const msg = order.payUrl ? "🛒 订单已生成！点链接付款：" + order.payUrl : "🛒 订单已生成！请打开美团App支付";
         return msg;
       }
       case "current_song": {
