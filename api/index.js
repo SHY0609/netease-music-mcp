@@ -1062,22 +1062,26 @@ export default async function handler(req, res) {
           };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // 搜索 SKU 下单
+      // 用菜单 SKU+attrs 下单
       try {
-        if (mtResult.source === "real") {
-          const shop = mtResult.shops?.find(s => s.products?.length > 0);
-          const prod = shop?.products?.[0];
-          if (shop && prod && prod.skuId) {
-            const orderResult = await mtPlaceOrder(shop.id, prod.skuId, "1950000002", 1, []);
+        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
+          const shopId = mtResult.shops[0].id;
+          const menu = await mtShopMenu(shopId);
+          if (menu.source === "real" && menu.products?.length > 0) {
+            const prod = menu.products[0];
+            const skuId = prod.skus?.[0]?.id || prod.id;
+            const attrs = prod.attrIds || [];
+            const orderResult = await mtPlaceOrder(shopId, skuId, "1950000002", 1, attrs);
             results.mtOrder = {
               orderOk: orderResult.source === "real",
               totalPrice: orderResult.totalPrice || "",
               deliveryFee: orderResult.deliveryFee || "",
-              shopName: shop.name || "", productName: prod.name || "",
-              skuId: prod.skuId || "", orderRaw: orderResult.raw || orderResult.reason || "",
+              shopName: mtResult.shops[0].name || "", productName: prod.name || "",
+              skuId: skuId || "", attrs: attrs,
+              orderRaw: orderResult.raw || orderResult.reason || "",
             };
           } else {
-            results.mtOrder = { reason: "no search product with SKU", shopsWithProducts: mtResult.shops?.filter(s => s.products?.length > 0).length || 0 };
+            results.mtOrder = { reason: "menu empty" };
           }
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
