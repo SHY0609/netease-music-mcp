@@ -438,84 +438,64 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
   const now = Date.now();
 
-  // 先试 order/preview（预下单/价格计算）
-  try {
-    const previewBody = new URLSearchParams({
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
-      openh5_uuid: uuid, uuid: uuid,
-      poi_id_str: shopId,
-      product_spu_id: itemId,
-      quantity: String(qty),
-      address_id: addressId || "",
-      req_time: String(now),
-      wm_ctype: "openapi", wm_dtype: "openapi",
-    }).toString();
+  // 用真实抓包参数格式: /openh5/order/v2/preview
+  const orderData = {
+    wm_poi_id: "-100",
+    poi_id_str: shopId,
+    wm_order_pay_type: 2,
+    cart_id: "",
+    foodlist: [{
+      skuId: Number(itemId),
+      id: Number(itemId),
+      count: qty,
+      attr_ids: [],
+      activityTag: "",
+    }],
+    expected_arrival_time: 0,
+    lat: 0, lng: 0,
+    orderToken: "",
+    nb_app: "wap",
+    pay_sdk_version: "1.1.8",
+    callback_info: { activity_callback_info: "" },
+    accepted_select_coupon: [],
+    addr_longitude: 0, addr_latitude: 0,
+    recipient_name: "", recipient_phone: "", recipient_gender: "", recipient_address: "",
+    house_number: {},
+    addr_id: addressId ? Number(addressId) : 0,
+    wx_pay_params: { orderPayChannel: 1 },
+    ext_param: { sqt_scene: "", sqtToken: "" },
+    info: { time: Math.floor(Date.now() / 1000), channel: 1001, ctime: Math.floor(Date.now() / 1000), logType: "S", cType: "andriod" },
+    wm_open_id: "",
+  };
 
-    const preview = await mtApi("/openh5/order/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: previewBody,
-    });
+  const bodyParams = new URLSearchParams({
+    data: JSON.stringify(orderData),
+    wm_latitude: "28673167", wm_longitude: "115887078",
+    wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+    wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+    openh5_uuid: uuid, uuid: uuid,
+  }).toString();
 
-    if (preview && preview.ok && preview.data) {
-      const data = preview.data.data || preview.data;
-      return {
-        source: "real",
-        step: "preview",
-        totalPrice: data.total_price || data.total || "",
-        deliveryFee: data.delivery_fee || data.shipping_fee || "",
-        discount: data.discount || "",
-        productPrice: data.product_price || "",
-        raw: JSON.stringify(data).slice(0, 500),
-      };
-    }
+  const result = await mtApi("/openh5/order/v2/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: bodyParams,
+  });
 
-    // 如果 preview 不是 200，记录原始响应用于调试
-    const previewRaw = preview?.raw || preview?.data || "";
-    console.log("order preview raw:", JSON.stringify(previewRaw).slice(0, 200));
-  } catch (e) {
-    console.log("order preview error:", e.message);
-  }
-
-  // 如果 preview 失败，试直接 create
-  try {
-    const createBody = new URLSearchParams({
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      openh5_uuid: uuid, uuid: uuid,
-      poi_id_str: shopId,
-      product_spu_id: itemId,
-      quantity: String(qty),
-      address_id: addressId || "",
-      req_time: String(now),
-      wm_ctype: "openapi",
-    }).toString();
-
-    const order = await mtApi("/openh5/order/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: createBody,
-    });
-
-    if (order && order.ok && order.data) {
-      const data = order.data.data || order.data;
-      return {
-        source: "real",
-        step: "created",
-        orderId: data.order_id || data.orderId || "",
-        totalPrice: data.total_price || data.total || "",
-        status: data.status || "",
-        raw: JSON.stringify(data).slice(0, 500),
-      };
-    }
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 600);
+  if (result && result.ok && result.data?.code === 0) {
+    const d = result.data.data || {};
     return {
-      source: "error",
-      reason: "order_failed",
-      raw: JSON.stringify(order?.data || order?.raw || "").slice(0, 300),
+      source: "real",
+      step: "preview",
+      totalPrice: d.totalPrice || d.total_price || d.total || "",
+      deliveryFee: d.deliveryFee || d.delivery_fee || d.shipping_fee || "",
+      discount: d.discount || "",
+      foodTotal: d.foodTotal || d.food_total || d.productTotal || "",
+      raw: rawStr,
     };
-  } catch (e) {
-    return { source: "error", reason: "api_error", hint: e.message };
   }
+  return { source: "error", reason: "preview_failed", raw: rawStr, httpStatus: result?.status };
 }
 
 async function addToPlaylist(pid, songId) {
