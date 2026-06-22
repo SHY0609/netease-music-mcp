@@ -431,17 +431,20 @@ async function mtShopMenu(shopId) {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(params).toString(),
     });
+    // 记录每次尝试的结果
+    const entry = { tag: tagId, code: result?.data?.code, count: result?.data?.data?.product_count || 0, msg: result?.data?.msg || "" };
+    tagRaw += (tagRaw ? " | " : "") + JSON.stringify(entry);
     // 有数据就停
     if (result?.data?.code === 0 && result.data.data?.product_count > 0) break;
-    // 记录每次尝试的结果
-    tagRaw = JSON.stringify({ tag: tagId, code: result?.data?.code, count: result?.data?.data?.product_count || 0 }).slice(0, 200);
   }
 
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
     const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
-    return parseMenuProducts(list);
+    const parsed = parseMenuProducts(list);
+    parsed.tagLog = tagRaw;
+    return parsed;
   }
   return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status, tagLog: tagRaw };
 }
