@@ -10,5 +10,10 @@
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {}
+  "dependencies": {
+    "cookie": "^1.1.1",
+    "jsdom": "^22.1.0",
+    "jsdom-browser.screen": "^0.2.2",
+    "xhr2": "^0.2.1"
+  }
 }

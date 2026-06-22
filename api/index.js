@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { BG_IMAGE } from "../lib/bg.js";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { getMtgsig } = require("../lib/mt-signer-v2.cjs");
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
@@ -259,11 +262,38 @@ function mtDiagnose(result, cookiePresent) {
   return null;
 }
 
+async function mtGetSign(url, bodyString) {
+  try {
+    const fullUrl = url + (url.includes("?") ? "&" : "?") +
+      "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
+    return { mtgsig: await getMtgsig(fullUrl, bodyString || "", MT_COOKIE), signedUrl: fullUrl };
+  } catch (e) {
+    console.error("mtgsig error:", e.message);
+    return { mtgsig: "", signedUrl: url };
+  }
+}
+
 async function mtApi(path, opts) {
   if (!MT_COOKIE) return null;
   try {
     const url = "https://i.waimai.meituan.com" + path;
-    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE }, ...opts });
+    const bodyStr = opts?.body || "";
+    const { mtgsig, signedUrl } = await mtGetSign(url, bodyStr);
+
+    const baseHeaders = {
+      ...MT_HEADERS,
+      cookie: MT_COOKIE,
+      "Accept-Language": "zh-CN,zh;q=0.9",
+      "sec-ch-ua": "\"Chromium\";v=\"9\", \"Not?A_Brand\";v=\"8\"",
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": "\"Windows\"",
+    };
+    if (mtgsig) baseHeaders["mtgsig"] = mtgsig;
+
+    // 合并 headers: opts.headers 作为基础, baseHeaders 覆盖（确保 mtgsig 不被覆盖）
+    const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
+    const { headers: _, ...restOpts } = opts;
+    const res = await fetch(signedUrl, { headers: mergedHeaders, ...restOpts });
     const text = await res.text();
     try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
     catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
@@ -283,31 +313,18 @@ async function mtSearch(keyword, lat, lng) {
     wm_order_channel: "default", req_time: String(now),
     search_global_id: "60500084",
     wm_latitude: String(wmLat), wm_longitude: String(wmLng),
-    search_latitude: String(wmLat), search_longitude: String(wmLng),
-    wm_actual_latitude: String(wmLat), wm_actual_longitude: String(wmLng),
-    wm_did: "", gaoda_id: "0", latitude: "", longitude: "", weien_id: "0",
     wm_ctype: "openapi", wm_dtype: "openapi",
     app_model: "0", page_size: "20", show_mode: "100",
     sort_type: "0", query_type: "0", wm_channel: "8",
-    wm_visitid: "", entrance_id: "0", ref_list_id: "",
-    wm_dversion: "4.0.0", word_source: "", personalized: "1",
-    rank_list_id: "", category_type: "0", search_cursor: "0",
-    search_source: "0", wm_appversion: "4.0.0",
-    is_fix_keyword: "false", product_tag_id: "",
-    search_page_type: "0", sub_category_type: "0",
-    origin_guide_query: "", slider_select_data: "",
-    activity_filter_codes: "", dcContinerInstanceInfo: "",
-    product_card_page_index: "0",
+    wm_dversion: "4.0.0", wm_appversion: "4.0.0",
+    openh5_uuid: uuid, uuid: uuid,
     utm_campaign: "AwaimaiBwaimai", utm_term: "40000",
     utm_source: "8", utm_medium: "openapi",
-    wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
-    openh5_uuid: uuid, uuid: uuid
   };
   const _token = mtMakeToken(bodyParams);
   bodyParams._token = _token;
 
-  const qs = "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + now;
-  const result = await mtApi("/openh5/search/globalpage?" + qs, {
+  const result = await mtApi("/openh5/search/globalpage", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(bodyParams).toString(),
@@ -316,8 +333,9 @@ async function mtSearch(keyword, lat, lng) {
   const reason = mtDiagnose(result, hasCookie);
   if (reason) {
     return {
-      source: "mock_fallback", reason: reason, keyword: keyword,
-      hint: "需要有效的 mtgsig 签名。在浏览器 H5 页面登录后才能获取真实菜单。"
+      source: "error", reason: reason, keyword: keyword,
+      hint: reason === "no_cookie" ? "请设置 MEITUAN_COOKIE 环境变量" :
+            "美团 API 暂时不可用，请稍后重试"
     };
   }
 
