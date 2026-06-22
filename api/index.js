@@ -364,8 +364,35 @@ async function mtSearch(keyword, lat, lng) {
 }
 
 async function mtGetAddresses() {
-  return { source: "mock_fallback", reason: "mtgsig_required",
-    hint: "地址接口需要独立逆向，暂未实现。请在美团 App 查看地址。" };
+  if (!MT_COOKIE) return { source: "error", reason: "no_cookie", hint: "请设置 MEITUAN_COOKIE" };
+  try {
+    const result = await mtApi("/openh5/address/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        wm_latitude: "28673167",
+        wm_longitude: "115887078",
+        openh5_uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
+      }).toString(),
+    });
+
+    if (result && result.ok && result.data) {
+      const addresses = (result.data.data || result.data.addressList || []).map(a => ({
+        id: a.address_id || a.id || "",
+        name: a.contact_name || a.name || "",
+        phone: a.contact_phone || a.phone || "",
+        address: a.address || "",
+        full: (a.poi_address || "") + (a.address_detail || ""),
+        lat: a.latitude || a.lat || "",
+        lng: a.longitude || a.lng || "",
+        gender: a.contact_gender || a.gender || "",
+      }));
+      return { source: "real", count: addresses.length, addresses };
+    }
+    return { source: "real", count: 0, addresses: [], raw: JSON.stringify(result?.data).slice(0, 300) };
+  } catch (e) {
+    return { source: "error", reason: "api_error", hint: e.message };
+  }
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
