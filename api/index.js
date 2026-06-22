@@ -266,9 +266,11 @@ async function mtGetSign(url, bodyString) {
   try {
     const fullUrl = url + (url.includes("?") ? "&" : "?") +
       "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
-    return { mtgsig: await getMtgsig(fullUrl, bodyString || "", MT_COOKIE), signedUrl: fullUrl };
+    const sig = await getMtgsig(fullUrl, bodyString || "", MT_COOKIE);
+    if (!sig) console.error("mtgsig: empty signature returned");
+    return { mtgsig: sig, signedUrl: fullUrl };
   } catch (e) {
-    console.error("mtgsig error:", e.message);
+    console.error("mtgsig error:", e.message, e.stack?.slice(0, 200));
     return { mtgsig: "", signedUrl: url };
   }
 }
