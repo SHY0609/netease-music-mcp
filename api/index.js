@@ -1041,51 +1041,24 @@ export default async function handler(req, res) {
         const addrResult = await mtGetAddresses();
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
-      // Test 8: Meituan shop menu (uses same shop from mtSearch)
-      let menuResult = { source: "error", products: [] };
-      let shopId = "";
-      try {
-        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
-          shopId = mtResult.shops[0].id;
-          menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "", raw: menuResult.raw || "" };
-        }
-      } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: SPU detail by ID (bypass menu API)
-      try {
-        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
-          const shop = mtResult.shops.find(s => s.products?.length > 0);
-          const prodId = shop?.products?.[0]?.id;
-          if (prodId) {
-            const detail = await mtSpuDetail([prodId]);
-            results.mtSpuDetail = { ok: detail.source === "real", endpoint: detail.endpoint || "", raw: detail.raw || "", code: detail.code || "", msg: detail.msg || "" };
-          }
-        }
-      } catch (e) { results.mtSpuDetail = { error: e.message }; }
-      // Test 10: 搜索 SKU + 菜单 attr_ids 混合下单
+      // 清空 mtMenu/mtOrder 旧逻辑，统一用搜索 SKU 下单
+      delete results.mtMenu;
+      // 直接用搜索结果 SKU 下单（通用方案，覆盖所有店铺）
       try {
         if (mtResult.source === "real") {
           const shop = mtResult.shops?.find(s => s.products?.length > 0);
           const prod = shop?.products?.[0];
-          // 从菜单拿对应产品的 attr_ids（如果能匹配到）
-          let attrs = [];
-          if (menuResult.source === "real" && prod) {
-            const menuProd = menuResult.products?.find(p => p.id === prod.id);
-            if (menuProd) attrs = menuProd.attrIds || [];
-          }
           if (shop && prod && prod.skuId) {
-            const orderResult = await mtPlaceOrder(shop.id, prod.skuId, "1950000002", 1, attrs);
+            const orderResult = await mtPlaceOrder(shop.id, prod.skuId, "1950000002", 1, []);
             results.mtOrder = {
               orderOk: orderResult.source === "real",
               totalPrice: orderResult.totalPrice || "",
               deliveryFee: orderResult.deliveryFee || "",
-              productName: prod.name || "",
-              skuId: prod.skuId || "",
-              attrs: attrs,
-              orderRaw: orderResult.raw || orderResult.reason || "",
+              shopName: shop.name || "", productName: prod.name || "",
+              skuId: prod.skuId || "", orderRaw: orderResult.raw || orderResult.reason || "",
             };
           } else {
-            results.mtOrder = { reason: "no product", firstSkuId: prod?.skuId || "missing" };
+            results.mtOrder = { reason: "no search product with SKU", shopsWithProducts: mtResult.shops?.filter(s => s.products?.length > 0).length || 0 };
           }
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
