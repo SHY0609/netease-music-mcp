@@ -444,6 +444,7 @@ async function mtShopMenu(shopId) {
     const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
     const parsed = parseMenuProducts(list);
     parsed.tagLog = tagRaw;
+    parsed.raw = rawStr.slice(0, 600);
     return parsed;
   }
   return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status, tagLog: tagRaw };
