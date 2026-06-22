@@ -1041,7 +1041,7 @@ export default async function handler(req, res) {
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
       // Test 8: Meituan shop menu (uses same shop from mtSearch)
-      let menuResult = { source: "error" };
+      let menuResult = { source: "error", products: [] };
       let shopId = "";
       try {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
