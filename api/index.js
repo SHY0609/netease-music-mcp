@@ -1078,30 +1078,6 @@ export default async function handler(req, res) {
           };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
-      try {
-        if (mtResult.source === "real") {
-          const shopsWithProducts = mtResult.shops?.filter(s => s.products?.length > 0) || [];
-          // 用真实地址测试下单
-          const shop = shopsWithProducts[0];
-          const fp = shop?.products?.[0];
-          const realAddrId = "1950000002"; // 从 mtGetAddresses 拿到
-          let orderResult = { reason: "no_product" };
-          if (fp && shop) {
-            orderResult = await mtPlaceOrder(shop.id, fp.id, realAddrId, 1, []);
-          }
-          results.mtOrder = {
-            shopsWithProducts: shopsWithProducts.length,
-            firstShop: shop?.name || "",
-            firstProduct: fp?.name || "",
-            firstPrice: fp?.price || "",
-            productId: fp?.id || "",
-            orderOk: orderResult.source === "real",
-            totalPrice: orderResult.totalPrice || "",
-            deliveryFee: orderResult.deliveryFee || "",
-            orderRaw: orderResult.raw || orderResult.reason || "",
-          };
-        }
-      } catch (e) { results.mtOrder = { error: e.message }; }
 
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(results));
