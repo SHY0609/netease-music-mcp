@@ -762,6 +762,12 @@ export default async function handler(req, res) {
           }
         } catch (e) { results.addTest = { ok: false, error: e.message }; }
       }
+      // Test 6: Meituan search (mtgsig v1.2)
+      try {
+        const mtResult = await mtSearch("汉堡", "28.673167", "115.887078");
+        results.mtSearch = { ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "" };
+      } catch (e) { results.mtSearch = { error: e.message }; }
+
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(results));
       return;
