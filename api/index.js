@@ -401,12 +401,34 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
+  // 尝试获取菜单 tag
+  let tagId = "";
+  try {
+    const tagRes = await mtApi("/openh5/v2/poi/menutags", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        wm_poi_id: "-100", poi_id_str: shopId,
+        wm_latitude: "28673167", wm_longitude: "115887078",
+        openh5_uuid: uuid, uuid: uuid,
+        platform: "3", partner: "4",
+      }).toString(),
+    });
+    if (tagRes?.data?.code === 0) {
+      const tags = tagRes.data.data?.tag_list || tagRes.data.data?.tags || [];
+      if (tags.length > 0) tagId = String(tags[0].tag_id || tags[0].id || "");
+    }
+  } catch {}
+  if (!tagId) tagId = "914597353";
+
   const result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      wm_poi_id: "-100",
-      poi_id_str: shopId,
+      wm_poi_id: "-100", poi_id_str: shopId,
+      spu_tag_id: tagId,
+      support_new_page_v3: "true",
+      sort_type: "1", tag_type: "1",
       wm_latitude: "28673167", wm_longitude: "115887078",
       wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
       wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
@@ -418,13 +440,11 @@ async function mtShopMenu(shopId) {
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
-    const spuList = d.spu_list || d.spuList || d.productList || d.food_list || d.list || [];
-    const items = (Array.isArray(spuList) ? spuList : []).slice(0, 15).map(spu => ({
+    const list = d.spu_list || d.spuList || d.product_spu_list || d.product_spu_list || d.list || [];
+    const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => ({
       id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
       name: spu.name || spu.spu_name || spu.product_name || "",
       price: spu.price || spu.current_price || spu.currentPrice || "",
-      originalPrice: spu.original_price || spu.originPrice || "",
-      monthSales: spu.month_sales || spu.sales || "",
       skus: (spu.sku_list || spu.skus || []).map(sku => ({
         id: String(sku.sku_id || sku.id || ""),
         name: sku.name || sku.sku_name || "",
