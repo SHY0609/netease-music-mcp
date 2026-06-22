@@ -400,34 +400,45 @@ async function mtGetAddresses() {
 async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
-  const now = Date.now();
 
-  // 试多种参数组合
-  const variants = [
-    { label: "v1", body: { wm_latitude: "28673167", wm_longitude: "115887078", openh5_uuid: uuid, uuid, wm_poi_id: shopId, wm_ctype: "openapi" } },
-    { label: "v2", body: { wm_latitude: "28673167", wm_longitude: "115887078", openh5_uuid: uuid, poi_id: shopId, wm_ctype: "openapi", req_time: String(now) } },
-    { label: "v3", body: { lat: "28.673167", lng: "115.887078", poi_id: shopId, platform_type: "3" } },
-  ];
+  const result = await mtApi("/openh5/v2/poi/menuproducts", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      wm_poi_id: "-100",
+      poi_id_str: shopId,
+      spu_tag_id: "0",  // 0 = 全部菜品
+      support_new_page_v3: "true",
+      sort_type: "1", tag_type: "1",
+      platform: "3", partner: "4",
+      wm_latitude: "28673167", wm_longitude: "115887078",
+      wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+      wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+      openh5_uuid: uuid, uuid: uuid,
+      originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu",
+    }).toString(),
+  });
 
-  const results = [];
-  for (const v of variants) {
-    try {
-      const r = await mtApi("/openh5/poi/food", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams(v.body).toString(),
-      });
-      const raw = JSON.stringify(r?.data || "").slice(0, 300);
-      results.push({ label: v.label, code: r?.data?.code, msg: r?.data?.msg || "", raw });
-    } catch (e) {
-      results.push({ label: v.label, error: e.message });
-    }
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
+  if (result && result.ok && result.data?.code === 0) {
+    const d = result.data.data || {};
+    const spuList = d.spu_list || d.spuList || d.productList || d.food_list || d.list || [];
+    const items = (Array.isArray(spuList) ? spuList : []).slice(0, 15).map(spu => ({
+      id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
+      name: spu.name || spu.spu_name || spu.product_name || "",
+      price: spu.price || spu.current_price || spu.currentPrice || "",
+      originalPrice: spu.original_price || spu.originPrice || "",
+      monthSales: spu.month_sales || spu.sales || "",
+      skus: (spu.sku_list || spu.skus || []).map(sku => ({
+        id: String(sku.sku_id || sku.id || ""),
+        name: sku.name || sku.sku_name || "",
+        price: sku.price || "",
+        attrIds: sku.attr_ids || sku.attrIds || [],
+      })),
+    }));
+    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr };
   }
-
-  // 找出成功的
-  const success = results.find(r => r.code === 0);
-  if (success) return { source: "real", raw: success.raw };
-  return { source: "error", reason: "all_variants_failed", variants: results };
+  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
@@ -910,7 +921,7 @@ export default async function handler(req, res) {
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtSearchResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (黄焖鸡 — known to have products)
+      // Test 9: Meituan order preview (use menu to get real skuId)
       try {
         const mt2 = await mtSearch("黄焖鸡", "28.673167", "115.887078");
         const shop = mt2.shops?.find(s => s.products?.length > 0);
