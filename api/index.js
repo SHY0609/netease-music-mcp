@@ -1012,10 +1012,11 @@ export default async function handler(req, res) {
           }
         } catch (e) { results.addTest = { ok: false, error: e.message }; }
       }
-      // Test 6: Meituan search (mtgsig v1.2) — 支持 ?mt=奶茶 自定义关键词
+      // Test 6/8/9: Meituan search + menu + order (共享 mtResult)
+      const mtKeyword = url.searchParams.get("mt") || "汉堡";
+      let mtResult = { source: "error", shops: [] };
       try {
-        const mtKeyword = url.searchParams.get("mt") || "汉堡";
-        const mtResult = await mtSearch(mtKeyword, "28.673167", "115.887078");
+        mtResult = await mtSearch(mtKeyword, "28.673167", "115.887078");
         results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "" };
       } catch (e) { results.mtSearch = { error: e.message }; }
       // Test 7: Meituan addresses
@@ -1023,20 +1024,18 @@ export default async function handler(req, res) {
         const addrResult = await mtGetAddresses();
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
-      // Test 8: Meituan shop menu
+      // Test 8: Meituan shop menu (uses same shop from mtSearch)
       try {
-        const mtSearchResult = await mtSearch("汉堡", "28.673167", "115.887078");
-        if (mtSearchResult.source === "real" && mtSearchResult.shops?.length > 0) {
-          const shopId = mtSearchResult.shops[0].id;
+        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
+          const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtSearchResult.shops[0].name };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (use menu SKU, not search product)
+      // Test 9: Meituan order preview (uses same shop + menu)
       try {
-        const mt2 = await mtSearch("汉堡", "28.673167", "115.887078");
-        const shop = mt2.shops?.[0];
-        if (shop) {
+        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
+          const shop = mtResult.shops[0];
           const menu = await mtShopMenu(shop.id);
           if (menu.source === "real" && menu.products?.length > 0) {
             const prod = menu.products[0];
@@ -1051,10 +1050,8 @@ export default async function handler(req, res) {
               skuId: skuId,
             };
           } else {
-            results.mtOrder = { reason: "menu_empty" };
+            results.mtOrder = { reason: "menu_empty", shopName: shop.name };
           }
-        } else {
-          results.mtOrder = { reason: "no_shop" };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
 
