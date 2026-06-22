@@ -684,7 +684,7 @@ export default async function handler(req, res) {
 
     // Debug: comprehensive API test (add ?addPid=X&addSid=Y for detailed add trace)
     if (path === "/api/debug") {
-      const results = { version: "2.0.0", deployed: "2025-06-20T17:00Z", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
+      const results = { version: "2.1.0", deployed: "fix-play-pick-first", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel HK", timestamp: new Date().toISOString() };
       try {
         // Test 1: search (use ?kw=xxx to test custom keyword)
         const testKw = url.searchParams.get("kw") || "Justin Bieber";
