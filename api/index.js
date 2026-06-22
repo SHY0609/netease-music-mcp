@@ -364,7 +364,7 @@ async function mtSearch(keyword, lat, lng) {
 }
 
 async function mtGetAddresses() {
-  if (!MT_COOKIE) return { source: "error", reason: "no_cookie", hint: "请设置 MEITUAN_COOKIE" };
+  if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   try {
     const result = await mtApi("/openh5/address/list", {
       method: "POST",
@@ -376,20 +376,22 @@ async function mtGetAddresses() {
       }).toString(),
     });
 
+    const rawStr = JSON.stringify(result?.data || result?.raw || "").slice(0, 600);
     if (result && result.ok && result.data) {
-      const addresses = (result.data.data || result.data.addressList || []).map(a => ({
+      const d = result.data.data || result.data;
+      const list = d?.addressList || d?.address_list || d?.list || d?.addresses || [];
+      const addresses = (Array.isArray(list) ? list : []).map(a => ({
         id: a.address_id || a.id || "",
         name: a.contact_name || a.name || "",
         phone: a.contact_phone || a.phone || "",
-        address: a.address || "",
+        address: a.address || a.poi_address || "",
         full: (a.poi_address || "") + (a.address_detail || ""),
         lat: a.latitude || a.lat || "",
         lng: a.longitude || a.lng || "",
-        gender: a.contact_gender || a.gender || "",
       }));
-      return { source: "real", count: addresses.length, addresses };
+      return { source: "real", count: addresses.length, addresses, raw: rawStr };
     }
-    return { source: "real", count: 0, addresses: [], raw: JSON.stringify(result?.data).slice(0, 600) };
+    return { source: "error", reason: "api_failed", count: 0, addresses: [], raw: rawStr, httpStatus: result?.status };
   } catch (e) {
     return { source: "error", reason: "api_error", hint: e.message };
   }
@@ -880,7 +882,7 @@ export default async function handler(req, res) {
       // Test 7: Meituan addresses
       try {
         const addrResult = await mtGetAddresses();
-        results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", raw: addrResult.raw || "" };
+        results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
 
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
