@@ -407,7 +407,7 @@ async function mtShopMenu(shopId) {
 
   // API — 试多个常见 tag
   let tagRaw = "";
-  const tagIds = ["1185057537", "914597353", ""]; // 塔斯汀tag, 汉堡tag, 无tag
+  const tagIds = ["296774087", "1185057537", "914597353", ""]; // 塔斯汀tag, 汉堡tag, 无tag
   let result = null;
   for (const tagId of tagIds) {
     const params = {
