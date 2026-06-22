@@ -405,34 +405,12 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
-  // 尝试获取菜单 tag
-  let tagId = "";
-  try {
-    const tagRes = await mtApi("/openh5/v2/poi/menutags", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        wm_poi_id: "-100", poi_id_str: shopId,
-        wm_latitude: "28673167", wm_longitude: "115887078",
-        openh5_uuid: uuid, uuid: uuid,
-        platform: "3", partner: "4",
-      }).toString(),
-    });
-    if (tagRes?.data?.code === 0) {
-      const tags = tagRes.data.data?.tag_list || tagRes.data.data?.tags || [];
-      if (tags.length > 0) tagId = String(tags[0].tag_id || tags[0].id || "");
-    }
-  } catch {}
-  if (!tagId) tagId = "914597353";
-
-  const result = await mtApi("/openh5/v2/poi/menuproducts", {
+  // 先尝试不带 tag 拿菜单（适配所有店铺类型）
+  let result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       wm_poi_id: "-100", poi_id_str: shopId,
-      spu_tag_id: tagId,
-      support_new_page_v3: "true",
-      sort_type: "1", tag_type: "1",
       wm_latitude: "28673167", wm_longitude: "115887078",
       wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
       wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
@@ -440,6 +418,44 @@ async function mtShopMenu(shopId) {
       platform: "3", partner: "4",
     }).toString(),
   });
+
+  // 如果空结果，尝试获取默认 tag
+  if (result?.data?.code === 0 && result.data.data?.product_count === 0) {
+    let tagId = "";
+    try {
+      const tagRes = await mtApi("/openh5/v2/poi/menutags", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          wm_poi_id: "-100", poi_id_str: shopId,
+          wm_latitude: "28673167", wm_longitude: "115887078",
+          openh5_uuid: uuid, uuid: uuid,
+          platform: "3", partner: "4",
+        }).toString(),
+      });
+      if (tagRes?.data?.code === 0) {
+        const tags = tagRes.data.data?.tag_list || tagRes.data.data?.tags || [];
+        if (tags.length > 0) tagId = String(tags[0].tag_id || tags[0].id || "");
+      }
+    } catch {}
+    if (tagId) {
+      result = await mtApi("/openh5/v2/poi/menuproducts", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          wm_poi_id: "-100", poi_id_str: shopId,
+          spu_tag_id: tagId,
+          support_new_page_v3: "true",
+          sort_type: "1", tag_type: "1",
+          wm_latitude: "28673167", wm_longitude: "115887078",
+          wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+          wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+          openh5_uuid: uuid, uuid: uuid,
+          platform: "3", partner: "4",
+        }).toString(),
+      });
+    }
+  }
 
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
