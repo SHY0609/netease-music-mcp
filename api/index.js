@@ -381,13 +381,13 @@ async function mtGetAddresses() {
       const d = result.data.data || result.data;
       const list = d?.addressList || d?.address_list || d?.list || d?.addresses || [];
       const addresses = (Array.isArray(list) ? list : []).map(a => ({
-        id: a.address_id || a.id || "",
-        name: a.contact_name || a.name || "",
-        phone: a.contact_phone || a.phone || "",
-        address: a.address || a.poi_address || "",
-        full: (a.poi_address || "") + (a.address_detail || ""),
-        lat: a.latitude || a.lat || "",
-        lng: a.longitude || a.lng || "",
+        id: String(a.addressId || a.address_id || a.id || ""),
+        name: a.name || a.contact_name || "",
+        phone: a.phone || a.contact_phone || "",
+        address: a.poi || a.address || a.poi_address || "",
+        lat: String(a.lat || a.latitude || ""),
+        lng: String(a.lng || a.longitude || ""),
+        gender: a.gender || "",
       }));
       return { source: "real", count: addresses.length, addresses, raw: rawStr };
     }
