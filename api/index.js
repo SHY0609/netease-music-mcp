@@ -1068,7 +1068,7 @@ export default async function handler(req, res) {
           const shopId = mtResult.shops[0].id;
           const menu = await mtShopMenu(shopId);
           if (menu.source === "real" && menu.products?.length > 0) {
-            const prod = menu.products[0];
+            const prod = menu.products.find(p => (p.price || 0) > 0.01) || menu.products[0];
             const skuId = prod.skus?.[0]?.id || prod.id;
             const attrs = prod.attrIds || [];
             const orderResult = await mtPlaceOrder(shopId, skuId, "1950000002", 1, attrs);
