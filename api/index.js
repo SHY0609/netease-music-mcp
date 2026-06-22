@@ -1038,37 +1038,16 @@ export default async function handler(req, res) {
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "", raw: menuResult.raw || "" };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (prefer shop with products in search, or use menu)
+      // Test 9: 只看搜索自带菜品的店铺下单
       try {
-        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
-          // 优先找搜索结果自带菜品的店铺
-          let shop = mtResult.shops.find(s => s.products?.length > 0);
-          let product, skuId, attrs;
-          if (shop && shop.products[0]) {
-            product = shop.products[0];
-            skuId = product.id;
-            attrs = [];
-          } else {
-            // fallback: 用菜单 API
-            shop = mtResult.shops[0];
-            const menu = await mtShopMenu(shop.id);
-            if (menu.source === "real" && menu.products?.length > 0) {
-              product = menu.products[0];
-              skuId = product.skus?.[0]?.id || product.id;
-              attrs = product.attrIds || [];
-            }
-          }
-          if (product && skuId) {
-            const orderResult = await mtPlaceOrder(shop.id, skuId, "test-no-real-order", 1, attrs);
-            results.mtOrder = {
-              ok: orderResult.source === "real", step: orderResult.step || "",
-              totalPrice: orderResult.totalPrice || "", deliveryFee: orderResult.deliveryFee || "",
-              raw: orderResult.raw || "", reason: orderResult.reason || "",
-              shopName: shop.name, productName: product.name, price: product.price,
-            };
-          } else {
-            results.mtOrder = { reason: "no_product", shopName: shop?.name };
-          }
+        if (mtResult.source === "real") {
+          const shopsWithProducts = mtResult.shops?.filter(s => s.products?.length > 0) || [];
+          results.mtOrder = {
+            shopsWithProducts: shopsWithProducts.length,
+            firstShop: shopsWithProducts[0]?.name || "",
+            firstProduct: shopsWithProducts[0]?.products?.[0]?.name || "",
+            firstPrice: shopsWithProducts[0]?.products?.[0]?.price || "",
+          };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
 
