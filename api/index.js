@@ -405,6 +405,39 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
+  // 策略1: 直接从店铺页面 HTML 提取初始数据（包含菜单和 tag）
+  try {
+    const pageUrl = `https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=${shopId}&wm_poi_id=-100`;
+    const pageRes = await fetch(pageUrl, {
+      headers: { "User-Agent": UA, "Cookie": MT_COOKIE, "Referer": "https://h5.waimai.meituan.com/" },
+    });
+    const html = await pageRes.text();
+
+    // 从 HTML 中提取 window.__INITIAL_STATE__ 或类似 JSON
+    const jsonPatterns = [
+      /window\.__INITIAL_STATE__\s*=\s*({.+?});/s,
+      /window\.__PREFETCH_DATA__\s*=\s*({.+?});/s,
+      /"product_spu_list"\s*:\s*(\[.+?\])/s,
+      /"spu_tag_list"\s*:\s*(\[.+?\])/s,
+      /"tag_list"\s*:\s*(\[.+?\])/s,
+    ];
+    for (const re of jsonPatterns) {
+      const m = html.match(re);
+      if (m) {
+        try {
+          const data = JSON.parse(m[1]);
+          // 如果匹配到的是 product_spu_list 数组，直接解析
+          if (Array.isArray(data) && data.length > 0 && data[0].name) {
+            return parseMenuProducts(data);
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    // HTML 提取失败，继续尝试 API
+  }
+
+  // 策略2: API（不需要 tag 也行）
   const result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -423,29 +456,29 @@ async function mtShopMenu(shopId) {
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
     const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
-    const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => {
-      const defaultAttrIds = (spu.attrs || []).flatMap(a =>
-        (a.values || []).slice(0, 1).map(v => v.id)
-      );
-      return {
-        id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
-        name: spu.name || spu.spu_name || spu.product_name || "",
-        price: spu.price || spu.min_price || spu.current_price || spu.currentPrice || "",
-        attrIds: defaultAttrIds,
-        skus: (spu.sku_list || spu.skus || []).map(sku => ({
-          id: String(sku.sku_id || sku.id || ""),
-          name: sku.name || sku.sku_name || sku.spec || "",
-          price: sku.price || spu.min_price || "",
-        })),
-      };
-    });
-    // 如果没有产品但 search 本身带了产品，就用 search 的
-    if (items.length === 0) {
-      return { source: "real", count: 0, products: [], raw: rawStr, note: "该店铺菜单需要tag过滤，请尝试从搜索结果中直接下单" };
-    }
-    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr };
+    return parseMenuProducts(list);
   }
   return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
+}
+
+function parseMenuProducts(list) {
+  const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => {
+    const defaultAttrIds = (spu.attrs || []).flatMap(a =>
+      (a.values || []).slice(0, 1).map(v => v.id)
+    );
+    return {
+      id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
+      name: spu.name || spu.spu_name || spu.product_name || "",
+      price: spu.price || spu.min_price || spu.current_price || spu.currentPrice || "",
+      attrIds: defaultAttrIds,
+      skus: (spu.sku_list || spu.skus || []).map(sku => ({
+        id: String(sku.sku_id || sku.id || ""),
+        name: sku.name || sku.sku_name || sku.spec || "",
+        price: sku.price || spu.min_price || "",
+      })),
+    };
+  });
+  return { source: "real", count: items.length, products: items.slice(0, 10) };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
@@ -1010,7 +1043,7 @@ export default async function handler(req, res) {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", note: menuResult.note || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
       // Test 9: Meituan order preview (prefer shop with products in search, or use menu)
