@@ -415,6 +415,26 @@ async function mtSpuDetail(spuIds) {
   return { source: "error", reason: "all_404" };
 }
 
+function parseMenuProducts(list) {
+  const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => {
+    const defaultAttrIds = (spu.attrs || []).flatMap(a =>
+      (a.values || []).slice(0, 1).map(v => v.id)
+    );
+    return {
+      id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
+      name: spu.name || spu.spu_name || spu.product_name || "",
+      price: spu.price || spu.min_price || spu.current_price || spu.currentPrice || "",
+      attrIds: defaultAttrIds,
+      skus: (spu.sku_list || spu.skus || []).map(sku => ({
+        id: String(sku.sku_id || sku.id || ""),
+        name: sku.name || sku.sku_name || sku.spec || "",
+        price: sku.price || spu.min_price || "",
+      })),
+    };
+  });
+  return { source: "real", count: items.length, products: items.slice(0, 10) };
+}
+
 async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
