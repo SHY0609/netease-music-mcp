@@ -1024,9 +1024,21 @@ export default async function handler(req, res) {
         const addrResult = await mtGetAddresses();
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
-      // 清空 mtMenu/mtOrder 旧逻辑，统一用搜索 SKU 下单
-      delete results.mtMenu;
-      // 直接用搜索结果 SKU 下单（通用方案，覆盖所有店铺）
+      // 新 mtShopMenu 测试（自动获取 tag）
+      try {
+        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
+          const shopId = mtResult.shops[0].id;
+          const menuResult = await mtShopMenu(shopId);
+          results.mtMenu = {
+            ok: menuResult.source === "real", count: menuResult.count || 0,
+            shopName: mtResult.shops[0].name,
+            tagLog: menuResult.tagLog || "", allTags: menuResult.allTags?.length || 0,
+            firstProduct: menuResult.products?.[0]?.name || "",
+            firstSku: menuResult.products?.[0]?.skus?.[0]?.id || "",
+          };
+        }
+      } catch (e) { results.mtMenu = { error: e.message }; }
+      // 搜索 SKU 下单
       try {
         if (mtResult.source === "real") {
           const shop = mtResult.shops?.find(s => s.products?.length > 0);
