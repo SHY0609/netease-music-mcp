@@ -405,66 +405,25 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
-  // 先尝试不带 tag 拿菜单（适配所有店铺类型）
-  let tagRaw = "";
-  let result = await mtApi("/openh5/v2/poi/menuproducts", {
+  const result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       wm_poi_id: "-100", poi_id_str: shopId,
+      support_new_page_v3: "true",
+      sort_type: "1", tag_type: "1",
       wm_latitude: "28673167", wm_longitude: "115887078",
-      wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
       wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
       openh5_uuid: uuid, uuid: uuid,
       platform: "3", partner: "4",
     }).toString(),
   });
 
-  // 如果空结果，尝试获取默认 tag
-  if (result?.data?.code === 0 && result.data.data?.product_count === 0) {
-    let tagId = "";
-    try {
-      const tagRes = await mtApi("/openh5/v2/poi/menutags", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          wm_poi_id: "-100", poi_id_str: shopId,
-          wm_latitude: "28673167", wm_longitude: "115887078",
-          openh5_uuid: uuid, uuid: uuid,
-          platform: "3", partner: "4",
-        }).toString(),
-      });
-      tagRaw = JSON.stringify(tagRes?.data || "").slice(0, 500);
-      if (tagRes?.data?.code === 0) {
-        const tags = tagRes.data.data?.tag_list || tagRes.data.data?.tags || [];
-        if (tags.length > 0) tagId = String(tags[0].tag_id || tags[0].id || "");
-      }
-    } catch {}
-    if (tagId) {
-      result = await mtApi("/openh5/v2/poi/menuproducts", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          wm_poi_id: "-100", poi_id_str: shopId,
-          spu_tag_id: tagId,
-          support_new_page_v3: "true",
-          sort_type: "1", tag_type: "1",
-          wm_latitude: "28673167", wm_longitude: "115887078",
-          wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
-          wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
-          openh5_uuid: uuid, uuid: uuid,
-          platform: "3", partner: "4",
-        }).toString(),
-      });
-    }
-  }
-
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
-    const list = d.spu_list || d.spuList || d.product_spu_list || d.product_spu_list || d.list || [];
+    const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
     const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => {
-      // 从 SPU attrs 里取第一个 value 的 id 作为默认 attr_ids
       const defaultAttrIds = (spu.attrs || []).flatMap(a =>
         (a.values || []).slice(0, 1).map(v => v.id)
       );
@@ -480,9 +439,13 @@ async function mtShopMenu(shopId) {
         })),
       };
     });
-    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr, tagRaw: tagRaw || "" };
+    // 如果没有产品但 search 本身带了产品，就用 search 的
+    if (items.length === 0) {
+      return { source: "real", count: 0, products: [], raw: rawStr, note: "该店铺菜单需要tag过滤，请尝试从搜索结果中直接下单" };
+    }
+    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr };
   }
-  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status, tagRaw: tagRaw || "" };
+  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
@@ -1047,28 +1010,39 @@ export default async function handler(req, res) {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", tagRaw: menuResult.tagRaw || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", note: menuResult.note || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (uses same shop + menu)
+      // Test 9: Meituan order preview (prefer shop with products in search, or use menu)
       try {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
-          const shop = mtResult.shops[0];
-          const menu = await mtShopMenu(shop.id);
-          if (menu.source === "real" && menu.products?.length > 0) {
-            const prod = menu.products[0];
-            const skuId = prod.skus?.[0]?.id || prod.id;
-            const attrs = prod.attrIds || [];
+          // 优先找搜索结果自带菜品的店铺
+          let shop = mtResult.shops.find(s => s.products?.length > 0);
+          let product, skuId, attrs;
+          if (shop && shop.products[0]) {
+            product = shop.products[0];
+            skuId = product.id;
+            attrs = [];
+          } else {
+            // fallback: 用菜单 API
+            shop = mtResult.shops[0];
+            const menu = await mtShopMenu(shop.id);
+            if (menu.source === "real" && menu.products?.length > 0) {
+              product = menu.products[0];
+              skuId = product.skus?.[0]?.id || product.id;
+              attrs = product.attrIds || [];
+            }
+          }
+          if (product && skuId) {
             const orderResult = await mtPlaceOrder(shop.id, skuId, "test-no-real-order", 1, attrs);
             results.mtOrder = {
               ok: orderResult.source === "real", step: orderResult.step || "",
               totalPrice: orderResult.totalPrice || "", deliveryFee: orderResult.deliveryFee || "",
               raw: orderResult.raw || "", reason: orderResult.reason || "",
-              shopName: shop.name, productName: prod.name, price: prod.price,
-              skuId: skuId,
+              shopName: shop.name, productName: product.name, price: product.price,
             };
           } else {
-            results.mtOrder = { reason: "menu_empty", shopName: shop.name };
+            results.mtOrder = { reason: "no_product", shopName: shop?.name };
           }
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
