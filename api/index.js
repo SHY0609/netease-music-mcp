@@ -406,6 +406,7 @@ async function mtShopMenu(shopId) {
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
   // API — 试多个常见 tag
+  let tagRaw = "";
   const tagIds = ["1185057537", "914597353", ""]; // 塔斯汀tag, 汉堡tag, 无tag
   let result = null;
   for (const tagId of tagIds) {
@@ -428,6 +429,8 @@ async function mtShopMenu(shopId) {
     });
     // 有数据就停
     if (result?.data?.code === 0 && result.data.data?.product_count > 0) break;
+    // 记录每次尝试的结果
+    tagRaw = JSON.stringify({ tag: tagId, code: result?.data?.code, count: result?.data?.data?.product_count || 0 }).slice(0, 200);
   }
 
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
@@ -436,7 +439,7 @@ async function mtShopMenu(shopId) {
     const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
     return parseMenuProducts(list);
   }
-  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
+  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status, tagLog: tagRaw };
 }
 
 function parseMenuProducts(list) {
@@ -456,7 +459,7 @@ function parseMenuProducts(list) {
       })),
     };
   });
-  return { source: "real", count: items.length, products: items.slice(0, 10) };
+  return { source: "real", count: items.length, products: items.slice(0, 10), tagLog: "" };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
@@ -1021,7 +1024,7 @@ export default async function handler(req, res) {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "" };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
       // Test 9: Meituan order preview (prefer shop with products in search, or use menu)
