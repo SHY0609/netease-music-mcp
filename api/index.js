@@ -457,32 +457,36 @@ async function mtShopMenu(shopId) {
   if (tags.length === 0) return { source: "error", reason: "no_tags" };
 
   // Step 2: use first tag to get products
-  const firstTag = tags[0].tag;
-  const result = await mtApi("/openh5/v2/poi/menuproducts", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      wm_poi_id: "-100", poi_id_str: shopId,
-      spu_tag_id: String(firstTag),
-      support_new_page_v3: "true", sort_type: "1", tag_type: "1",
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      openh5_uuid: uuid, uuid: uuid,
-      platform: "3", partner: "4",
-      originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=" + shopId,
-      riskLevel: "71", optimusCode: "10",
-    }).toString(),
-  });
+  let result = null; let usedTag = "";
+  for (const tag of tags) {
+    usedTag = tag.tag;
+    result = await mtApi("/openh5/v2/poi/menuproducts", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        wm_poi_id: "-100", poi_id_str: shopId,
+        spu_tag_id: String(usedTag),
+        support_new_page_v3: "true", sort_type: "1", tag_type: "1",
+        wm_latitude: "28673167", wm_longitude: "115887078",
+        openh5_uuid: uuid, uuid: uuid,
+        platform: "3", partner: "4",
+        originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=" + shopId,
+        riskLevel: "71", optimusCode: "10",
+      }).toString(),
+    });
+    if (result && result.data && result.data.code === 0 && result.data.data && result.data.data.product_count > 0) break;
+  }
 
   if (result && result.data && result.data.code === 0) {
     const d = result.data.data || {};
     const list = d.product_spu_list || d.spu_list || [];
     const parsed = parseMenuProducts(list);
-    parsed.tagLog = "tag:" + firstTag + " count:" + d.product_count;
+    parsed.tagLog = "tag:" + usedTag + " count:" + d.product_count;
     parsed.allTags = tags.slice(0, 20).map(function(t) { return { tag: t.tag, name: t.name, count: t.product_count }; });
     return parsed;
   }
   const rawStr = JSON.stringify((result && result.data) || "").slice(0, 400);
-  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result && result.status, tagCount: tags.length, firstTag: firstTag };
+  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result && result.status, tagCount: tags.length, usedTag: usedTag };
 }
 async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
