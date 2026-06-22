@@ -884,6 +884,22 @@ export default async function handler(req, res) {
         const addrResult = await mtGetAddresses();
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
+      // Test 8: Meituan order preview (uses empty addressId — won't actually order)
+      try {
+        const mtSearchResult = await mtSearch("汉堡", "28.673167", "115.887078");
+        if (mtSearchResult.source === "real" && mtSearchResult.shops?.length > 0) {
+          const shop = mtSearchResult.shops[0];
+          const product = shop.products?.[0];
+          if (product) {
+            const orderResult = await mtPlaceOrder(shop.id, product.id, "test-no-real-order", 1);
+            results.mtOrder = { ok: orderResult.source === "real", step: orderResult.step || "", raw: orderResult.raw || "", reason: orderResult.reason || "" };
+          } else {
+            results.mtOrder = { reason: "no_product", shopName: shop.name };
+          }
+        } else {
+          results.mtOrder = { reason: "no_shop" };
+        }
+      } catch (e) { results.mtOrder = { error: e.message }; }
 
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(results));
