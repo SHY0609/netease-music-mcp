@@ -407,15 +407,11 @@ async function mtShopMenu(shopId) {
     body: new URLSearchParams({
       wm_poi_id: "-100",
       poi_id_str: shopId,
-      spu_tag_id: "0",  // 0 = 全部菜品
-      support_new_page_v3: "true",
-      sort_type: "1", tag_type: "1",
-      platform: "3", partner: "4",
       wm_latitude: "28673167", wm_longitude: "115887078",
       wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
       wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
       openh5_uuid: uuid, uuid: uuid,
-      originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu",
+      platform: "3", partner: "4",
     }).toString(),
   });
 
