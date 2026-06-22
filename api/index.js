@@ -23,6 +23,7 @@ async function apiGet(path) {
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 const STATE_FILE = join(tmpdir(), "netease-player-state.json");
 const EMPTY_STATE = () => ({ queue: [], current: null, status: "idle", currentTime: 0, lyrics: null, _mcpSetAt: 0 });
 
@@ -239,29 +240,30 @@ async function getPlaylistDetail(id, offset = 0) {
 }
 
 
-// ─── meituan helpers — best-effort real API, graceful mock fallback ──
+// ─── meituan helpers — real API via /openh5/search/globalpage ──
+// _token = base64(zlib.deflate(json_string))
+function mtMakeToken(data) {
+  const json = JSON.stringify(data);
+  const deflated = deflateSync(Buffer.from(json, "utf8"));
+  return deflated.toString("base64");
+}
+
 const MT_HEADERS = { "User-Agent": UA, "Referer": "https://h5.waimai.meituan.com/", "Accept": "application/json", "Origin": "https://h5.waimai.meituan.com" };
-// mtgsig session constant (a6) — reused across requests within same browser session
-const MT_A6 = "h1.9M19760dyGWL/3w+pNvuzQoYFMXMGT1brMiHhRvFHmef5MQx4w9xKM2PN9CC+4DiYbtgUU59JD5XQBvbWlikqiRI+2G74ViYXR7Bej6zpB22iRY2AxitkbLoxVx9/kIXLXhVKxbPXyvAu6dWmGDlBbwHWqDFa+2rVn81Dcab9ADX1a1xJWAs7qgt+Yny3K4iQnswb4dpRt6/7IspMwXfyt9y5uJRhvsSKGEwkXAAtSMC0KP+RVhA9YmC2yHhUpxDs9gmPpG62+9D7hmjaNmpbGpAOjwowWBJDBE9Nhez9uart1cNpoiMzHoRb10umq5hhubTjND938Vx5T9/hXPLDurfIYSiQqHYnHFrGfoto3KsAsU8SmAQxwM0Ya8xRSJkoet/G5gozImRhYfeTWUtfZ9DZHzBYP0BVMhNYGzQ9hkLJPiX7T3qWdKZ9/MpjpMQFksu05zpfoOyjDUBDISwftEbAwaKp5n7wdcvdDrIZxmQjX6Q7k5qHBMuSP7TXqZXUixuvQlSSyxmOIR8J80w2oQ==";
 
 function mtDiagnose(result, cookiePresent) {
   if (!cookiePresent) return "no_cookie";
   if (!result) return "no_response";
   if (result.status === 403) return "upstream_403";
-  if (result.status === 404) return "endpoint_404";
   if (result.status !== 200) return "http_" + result.status;
   if (!result.data || result.data.code !== 0) return "empty_payload";
-  return null; // success
+  return null;
 }
 
 async function mtApi(path, opts) {
   if (!MT_COOKIE) return null;
   try {
-    // mtgsig: a6 is session-constant, a2 is timestamp, a8/d1 need generation (TODO: lib/meituan.js)
-    const ts = Date.now();
-    const mtgsig = JSON.stringify({ a1: "1.2", a2: ts, a3: "v2wyzwv56vxw5yxwyx5vywx40z24928z80vvy6z045197958360v11v0", a5: "", a6: MT_A6, a8: "", a9: "4.2.4,7,24", a10: "9f", x0: 4, d1: "" });
     const url = "https://i.waimai.meituan.com" + path;
-    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE, mtgsig: mtgsig }, ...opts });
+    const res = await fetch(url, { headers: { ...MT_HEADERS, cookie: MT_COOKIE }, ...opts });
     const text = await res.text();
     try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
     catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
@@ -270,71 +272,87 @@ async function mtApi(path, opts) {
 
 async function mtSearch(keyword, lat, lng) {
   const hasCookie = !!MT_COOKIE;
-  const params = new URLSearchParams({ keyword, lat: lat || "28.673167", lng: lng || "115.887078", page: "1" });
-  const result = await mtApi("/openapi/v1/poi/food?" + params);
-  const reason = mtDiagnose(result, hasCookie);
+  const wmLat = lat ? Math.round(parseFloat(lat) * 1e6) : 28673167;
+  const wmLng = lng ? Math.round(parseFloat(lng) * 1e6) : 115887078;
+  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const now = Date.now();
 
+  const bodyParams = {
+    optimus_code: "10", optimus_risk_level: "71",
+    keyword: keyword, page_index: "0",
+    wm_order_channel: "default", req_time: String(now),
+    search_global_id: "60500084",
+    wm_latitude: String(wmLat), wm_longitude: String(wmLng),
+    search_latitude: String(wmLat), search_longitude: String(wmLng),
+    wm_actual_latitude: String(wmLat), wm_actual_longitude: String(wmLng),
+    wm_did: "", gaoda_id: "0", latitude: "", longitude: "", weien_id: "0",
+    wm_ctype: "openapi", wm_dtype: "openapi",
+    app_model: "0", page_size: "20", show_mode: "100",
+    sort_type: "0", query_type: "0", wm_channel: "8",
+    wm_visitid: "", entrance_id: "0", ref_list_id: "",
+    wm_dversion: "4.0.0", word_source: "", personalized: "1",
+    rank_list_id: "", category_type: "0", search_cursor: "0",
+    search_source: "0", wm_appversion: "4.0.0",
+    is_fix_keyword: "false", product_tag_id: "",
+    search_page_type: "0", sub_category_type: "0",
+    origin_guide_query: "", slider_select_data: "",
+    activity_filter_codes: "", dcContinerInstanceInfo: "",
+    product_card_page_index: "0",
+    utm_campaign: "AwaimaiBwaimai", utm_term: "40000",
+    utm_source: "8", utm_medium: "openapi",
+    wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+    openh5_uuid: uuid, uuid: uuid
+  };
+  const _token = mtMakeToken(bodyParams);
+  bodyParams._token = _token;
+
+  const qs = "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + now;
+  const result = await mtApi("/openh5/search/globalpage?" + qs, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(bodyParams).toString(),
+  });
+
+  const reason = mtDiagnose(result, hasCookie);
   if (reason) {
     return {
-      source: "mock_fallback",
-      reason: reason,
-      keyword: keyword,
-      shops: [{ id: "mock_1", name: "（模拟）附近的奶茶店", addr: "需要配置 MEITUAN_COOKIE + mtgsig 签名才能获取真实菜单" }],
-      hint: "美团接口当前不可用（" + reason + "）。可通过网页版 https://h5.waimai.meituan.com 手动查看。"
+      source: "mock_fallback", reason: reason, keyword: keyword,
+      hint: "需要有效的 mtgsig 签名。在浏览器 H5 页面登录后才能获取真实菜单。"
     };
   }
 
-  const raw = result.data;
-  const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.poiList) ? raw.poiList : Array.isArray(raw) ? raw : [];
-  const shops = list.map(function(s) { return {
-    id: String(s.poiId || s.id || ""), name: s.name || s.poiName || "",
-    addr: s.address || s.addr || "", score: s.wm_poi_score || s.score || "",
-  }});
-  return { source: "real", keyword: keyword, count: shops.length, shops: shops.slice(0, 10) };
+  // Parse shops from response
+  const modules = result.data?.data?.module_list || [];
+  const shops = [];
+  for (const m of modules) {
+    try {
+      const d = JSON.parse(m.string_data || "{}");
+      const products = (d.product_list || []).map(function(p) { return {
+        id: String(p.product_spu_id || ""), name: p.product_name || "",
+        price: p.price || p.activity_info?.activity_price || "", monthSales: p.month_sales || 0,
+        pic: p.picture || ""
+      }});
+      shops.push({
+        id: d.poi_id_str || "", name: d.name || "",
+        addr: d.address || "", score: d.wm_poi_score || "",
+        distance: d.distance || "", deliveryTime: d.delivery_time_tip || "",
+        shippingFee: d.shipping_fee_tip || "", minPrice: d.min_price_tip || "",
+        monthSales: d.month_sales_tip || "", products: products.slice(0, 5)
+      });
+    } catch {}
+  }
+
+  return { source: "real", keyword: keyword, count: shops.length, shops: shops.slice(0, 15) };
 }
 
 async function mtGetAddresses() {
-  const hasCookie = !!MT_COOKIE;
-  const result = await mtApi("/openh5/address/list");
-  const reason = mtDiagnose(result, hasCookie);
-
-  if (reason) {
-    return {
-      source: "mock_fallback",
-      reason: reason,
-      addresses: [{ id: "mock_addr", name: "（模拟）家", addr: "需要 mtgsig 签名才能获取真实地址" }],
-      hint: "当前返回模拟地址。请在美团 App 设置真实地址后重试。"
-    };
-  }
-
-  const raw = result.data;
-  const list = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.addressList) ? raw.addressList : Array.isArray(raw) ? raw : [];
-  const addrs = list.map(function(a) { return {
-    id: String(a.id || a.addressId || ""), name: a.name || a.tag || "",
-    addr: a.address || a.fullAddr || "", phone: a.phone || "",
-  }});
-  return { source: "real", count: addrs.length, addresses: addrs };
+  return { source: "mock_fallback", reason: "mtgsig_required",
+    hint: "地址接口需要独立逆向，暂未实现。请在美团 App 查看地址。" };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
-  const hasCookie = !!MT_COOKIE;
-  const result = await mtApi("/openh5/order/create", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ poiId: shopId, itemId: itemId, addressId: addressId, quantity: quantity || 1 }),
-  });
-  const reason = mtDiagnose(result, hasCookie);
-
-  if (reason) {
-    return {
-      source: "mock_fallback",
-      reason: reason === "empty_payload" ? "mtgsig_required" : reason,
-      payUrl: "",
-      hint: "下单需要 mtgsig 签名，当前未实现。请手动在美团 App 完成支付。"
-    };
-  }
-
-  return { source: "real", payUrl: result.data?.data?.payUrl || result.data?.pay_url || "" };
+  return { source: "mock_fallback", reason: "mtgsig_required",
+    hint: "下单需要完整的 mtgsig + _token + 订单参数逆向，暂未实现。" };
 }
 
 async function addToPlaylist(pid, songId) {
