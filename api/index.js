@@ -812,7 +812,7 @@ export default async function handler(req, res) {
 
     // Debug: comprehensive API test (add ?addPid=X&addSid=Y for detailed add trace)
     if (path === "/api/debug") {
-      const results = { version: "2.1.0", deployed: "fix-play-pick-first", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel HK", timestamp: new Date().toISOString() };
+      const results = { version: "2.1.0", deployed: "mt-addr-raw", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel HK", timestamp: new Date().toISOString() };
       try {
         // Test 1: search (use ?kw=xxx to test custom keyword)
         const testKw = url.searchParams.get("kw") || "Justin Bieber";
@@ -880,7 +880,7 @@ export default async function handler(req, res) {
       // Test 7: Meituan addresses
       try {
         const addrResult = await mtGetAddresses();
-        results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "" };
+        results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", raw: addrResult.raw || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
 
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
