@@ -389,7 +389,7 @@ async function mtGetAddresses() {
       }));
       return { source: "real", count: addresses.length, addresses };
     }
-    return { source: "real", count: 0, addresses: [], raw: JSON.stringify(result?.data).slice(0, 300) };
+    return { source: "real", count: 0, addresses: [], raw: JSON.stringify(result?.data).slice(0, 600) };
   } catch (e) {
     return { source: "error", reason: "api_error", hint: e.message };
   }
