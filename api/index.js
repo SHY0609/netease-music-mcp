@@ -441,23 +441,29 @@ async function mtShopMenu(shopId) {
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
     const list = d.spu_list || d.spuList || d.product_spu_list || d.product_spu_list || d.list || [];
-    const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => ({
-      id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
-      name: spu.name || spu.spu_name || spu.product_name || "",
-      price: spu.price || spu.current_price || spu.currentPrice || "",
-      skus: (spu.sku_list || spu.skus || []).map(sku => ({
-        id: String(sku.sku_id || sku.id || ""),
-        name: sku.name || sku.sku_name || "",
-        price: sku.price || "",
-        attrIds: sku.attr_ids || sku.attrIds || [],
-      })),
-    }));
+    const items = (Array.isArray(list) ? list : []).slice(0, 15).map(spu => {
+      // 从 SPU attrs 里取第一个 value 的 id 作为默认 attr_ids
+      const defaultAttrIds = (spu.attrs || []).flatMap(a =>
+        (a.values || []).slice(0, 1).map(v => v.id)
+      );
+      return {
+        id: String(spu.spu_id || spu.id || spu.product_spu_id || ""),
+        name: spu.name || spu.spu_name || spu.product_name || "",
+        price: spu.price || spu.min_price || spu.current_price || spu.currentPrice || "",
+        attrIds: defaultAttrIds,
+        skus: (spu.sku_list || spu.skus || []).map(sku => ({
+          id: String(sku.sku_id || sku.id || ""),
+          name: sku.name || sku.sku_name || sku.spec || "",
+          price: sku.price || spu.min_price || "",
+        })),
+      };
+    });
     return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr };
   }
   return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
 }
 
-async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
+async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   if (!shopId || !itemId) return { source: "error", reason: "shopId and itemId required" };
 
@@ -475,7 +481,7 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
       skuId: Number(itemId),
       id: Number(itemId),
       count: qty,
-      attr_ids: [],
+      attr_ids: attrIds || [],
       activityTag: "",
     }],
     expected_arrival_time: 0,
@@ -946,7 +952,8 @@ export default async function handler(req, res) {
           if (menu.source === "real" && menu.products?.length > 0) {
             const prod = menu.products[0];
             const skuId = prod.skus?.[0]?.id || prod.id;
-            const orderResult = await mtPlaceOrder(shop.id, skuId, "test-no-real-order", 1);
+            const attrs = prod.attrIds || [];
+            const orderResult = await mtPlaceOrder(shop.id, skuId, "test-no-real-order", 1, attrs);
             results.mtOrder = {
               ok: orderResult.source === "real", step: orderResult.step || "",
               totalPrice: orderResult.totalPrice || "", deliveryFee: orderResult.deliveryFee || "",
