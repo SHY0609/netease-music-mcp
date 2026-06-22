@@ -405,50 +405,19 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
-  // 策略1: 直接从店铺页面 HTML 提取初始数据（包含菜单和 tag）
-  try {
-    const pageUrl = `https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=${shopId}&wm_poi_id=-100`;
-    const pageRes = await fetch(pageUrl, {
-      headers: { "User-Agent": UA, "Cookie": MT_COOKIE, "Referer": "https://h5.waimai.meituan.com/" },
-    });
-    const html = await pageRes.text();
-
-    // 从 HTML 中提取 window.__INITIAL_STATE__ 或类似 JSON
-    const jsonPatterns = [
-      /window\.__INITIAL_STATE__\s*=\s*({.+?});/s,
-      /window\.__PREFETCH_DATA__\s*=\s*({.+?});/s,
-      /"product_spu_list"\s*:\s*(\[.+?\])/s,
-      /"spu_tag_list"\s*:\s*(\[.+?\])/s,
-      /"tag_list"\s*:\s*(\[.+?\])/s,
-    ];
-    for (const re of jsonPatterns) {
-      const m = html.match(re);
-      if (m) {
-        try {
-          const data = JSON.parse(m[1]);
-          // 如果匹配到的是 product_spu_list 数组，直接解析
-          if (Array.isArray(data) && data.length > 0 && data[0].name) {
-            return parseMenuProducts(data);
-          }
-        } catch {}
-      }
-    }
-  } catch (e) {
-    // HTML 提取失败，继续尝试 API
-  }
-
-  // 策略2: API（不需要 tag 也行）
+  // API — 最少参数
   const result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      wm_poi_id: "-100", poi_id_str: shopId,
-      support_new_page_v3: "true",
-      sort_type: "1", tag_type: "1",
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
-      openh5_uuid: uuid, uuid: uuid,
-      platform: "3", partner: "4",
+      wm_poi_id: "-100",
+      poi_id_str: shopId,
+      wm_latitude: "28673167",
+      wm_longitude: "115887078",
+      openh5_uuid: uuid,
+      uuid: uuid,
+      platform: "3",
+      partner: "4",
     }).toString(),
   });
 
