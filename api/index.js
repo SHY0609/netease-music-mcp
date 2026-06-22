@@ -1012,10 +1012,11 @@ export default async function handler(req, res) {
           }
         } catch (e) { results.addTest = { ok: false, error: e.message }; }
       }
-      // Test 6: Meituan search (mtgsig v1.2)
+      // Test 6: Meituan search (mtgsig v1.2) — 支持 ?mt=奶茶 自定义关键词
       try {
-        const mtResult = await mtSearch("汉堡", "28.673167", "115.887078");
-        results.mtSearch = { ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "" };
+        const mtKeyword = url.searchParams.get("mt") || "汉堡";
+        const mtResult = await mtSearch(mtKeyword, "28.673167", "115.887078");
+        results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "" };
       } catch (e) { results.mtSearch = { error: e.message }; }
       // Test 7: Meituan addresses
       try {
