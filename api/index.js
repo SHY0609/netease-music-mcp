@@ -364,7 +364,7 @@ async function mtSearch(keyword, lat, lng) {
     } catch {}
   }
 
-  return { source: "real", keyword: keyword, count: shops.length, shops: shops.slice(0, 15) };
+  return { source: "real", keyword: keyword, count: shops.length, shops: shops.slice(0, 15), _rawModules: modules.slice(0, 5).map(m => m.string_data || "") };
 }
 
 async function mtGetAddresses() {
@@ -1023,7 +1023,9 @@ export default async function handler(req, res) {
       let mtResult = { source: "error", shops: [] };
       try {
         mtResult = await mtSearch(mtKeyword, "28.673167", "115.887078");
-        results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "" };
+        // 把第一家店的原始 module data 也显示出来（用于找 tag 线索）
+        const firstShopRaw = mtResult._rawModules?.[0] || "";
+        results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "", shopRaw: firstShopRaw.slice(0, 500) };
       } catch (e) { results.mtSearch = { error: e.message }; }
       // Test 7: Meituan addresses
       try {
