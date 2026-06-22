@@ -399,29 +399,35 @@ async function mtGetAddresses() {
 
 async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
-  try {
-    // 试 poi/food 接口
-    const result = await mtApi("/openh5/poi/food", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        wm_latitude: "28673167", wm_longitude: "115887078",
-        openh5_uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
-        uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
-        poi_id_str: shopId,
-        wm_ctype: "openapi",
-      }).toString(),
-    });
-    const rawStr = JSON.stringify(result?.data || result?.raw || "").slice(0, 600);
-    if (result && result.ok && result.data?.code === 0) {
-      const d = result.data.data || {};
-      const spuList = d.spu_list || d.productList || d.food_list || [];
-      return { source: "real", count: spuList.length, products: spuList.slice(0, 10), raw: rawStr };
+  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const now = Date.now();
+
+  // 试多种参数组合
+  const variants = [
+    { label: "v1", body: { wm_latitude: "28673167", wm_longitude: "115887078", openh5_uuid: uuid, uuid, wm_poi_id: shopId, wm_ctype: "openapi" } },
+    { label: "v2", body: { wm_latitude: "28673167", wm_longitude: "115887078", openh5_uuid: uuid, poi_id: shopId, wm_ctype: "openapi", req_time: String(now) } },
+    { label: "v3", body: { lat: "28.673167", lng: "115.887078", poi_id: shopId, platform_type: "3" } },
+  ];
+
+  const results = [];
+  for (const v of variants) {
+    try {
+      const r = await mtApi("/openh5/poi/food", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(v.body).toString(),
+      });
+      const raw = JSON.stringify(r?.data || "").slice(0, 300);
+      results.push({ label: v.label, code: r?.data?.code, msg: r?.data?.msg || "", raw });
+    } catch (e) {
+      results.push({ label: v.label, error: e.message });
     }
-    return { source: "error", reason: "api_failed", raw: rawStr, httpStatus: result?.status };
-  } catch (e) {
-    return { source: "error", reason: e.message };
   }
+
+  // 找出成功的
+  const success = results.find(r => r.code === 0);
+  if (success) return { source: "real", raw: success.raw };
+  return { source: "error", reason: "all_variants_failed", variants: results };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
@@ -924,20 +930,16 @@ export default async function handler(req, res) {
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtSearchResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (uses empty addressId — won't actually order)
+      // Test 9: Meituan order preview (黄焖鸡 — known to have products)
       try {
-        const mtSearchResult = await mtSearch("汉堡", "28.673167", "115.887078");
-        if (mtSearchResult.source === "real" && mtSearchResult.shops?.length > 0) {
-          const shop = mtSearchResult.shops[0];
-          const product = shop.products?.[0];
-          if (product) {
-            const orderResult = await mtPlaceOrder(shop.id, product.id, "test-no-real-order", 1);
-            results.mtOrder = { ok: orderResult.source === "real", step: orderResult.step || "", raw: orderResult.raw || "", reason: orderResult.reason || "" };
-          } else {
-            results.mtOrder = { reason: "no_product", shopName: shop.name };
-          }
+        const mt2 = await mtSearch("黄焖鸡", "28.673167", "115.887078");
+        const shop = mt2.shops?.find(s => s.products?.length > 0);
+        if (shop) {
+          const product = shop.products[0];
+          const orderResult = await mtPlaceOrder(shop.id, product.id, "test-no-real-order", 1);
+          results.mtOrder = { ok: orderResult.source === "real", step: orderResult.step || "", raw: orderResult.raw || "", reason: orderResult.reason || "", shopName: shop.name, productName: product.name, price: product.price };
         } else {
-          results.mtOrder = { reason: "no_shop" };
+          results.mtOrder = { reason: "no_product_in_results" };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
 
