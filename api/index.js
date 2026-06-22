@@ -397,6 +397,33 @@ async function mtGetAddresses() {
   }
 }
 
+async function mtShopMenu(shopId) {
+  if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
+  try {
+    // 试 poi/food 接口
+    const result = await mtApi("/openh5/poi/food", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        wm_latitude: "28673167", wm_longitude: "115887078",
+        openh5_uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
+        uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
+        poi_id_str: shopId,
+        wm_ctype: "openapi",
+      }).toString(),
+    });
+    const rawStr = JSON.stringify(result?.data || result?.raw || "").slice(0, 600);
+    if (result && result.ok && result.data?.code === 0) {
+      const d = result.data.data || {};
+      const spuList = d.spu_list || d.productList || d.food_list || [];
+      return { source: "real", count: spuList.length, products: spuList.slice(0, 10), raw: rawStr };
+    }
+    return { source: "error", reason: "api_failed", raw: rawStr, httpStatus: result?.status };
+  } catch (e) {
+    return { source: "error", reason: e.message };
+  }
+}
+
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   if (!shopId || !itemId) return { source: "error", reason: "shopId and itemId required" };
@@ -526,6 +553,8 @@ const tools = [
     inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
   { name: "mt_addresses", description: "Get your saved delivery addresses from Meituan.",
     inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "mt_menu", description: "Get full menu/products for a Meituan shop.",
+    inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
   { name: "mt_order", description: "Create an order on Meituan. Returns payment link.",
     inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 } }, required: ["shopId", "itemId", "addressId"] } },
   { name: "current_song", description: "Get current song info, playback position, and lyrics around current position. AI can see what you're hearing right now.",
@@ -605,11 +634,13 @@ async function execTool(name, args) {
         const addrs = await mtGetAddresses();
         return JSON.stringify(addrs);
       }
+      case "mt_menu": {
+        const menu = await mtShopMenu(args.shopId);
+        return JSON.stringify(menu);
+      }
       case "mt_order": {
         const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1);
-        if (order.source === "mock_fallback") return JSON.stringify(order);
-        const msg = order.payUrl ? "🛒 订单已生成！点链接付款：" + order.payUrl : "🛒 订单已生成！请打开美团App支付";
-        return msg;
+        return JSON.stringify(order);
       }
       case "current_song": {
         if (!p.current) return "No song playing";
@@ -884,7 +915,16 @@ export default async function handler(req, res) {
         const addrResult = await mtGetAddresses();
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
-      // Test 8: Meituan order preview (uses empty addressId — won't actually order)
+      // Test 8: Meituan shop menu
+      try {
+        const mtSearchResult = await mtSearch("汉堡", "28.673167", "115.887078");
+        if (mtSearchResult.source === "real" && mtSearchResult.shops?.length > 0) {
+          const shopId = mtSearchResult.shops[0].id;
+          const menuResult = await mtShopMenu(shopId);
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtSearchResult.shops[0].name };
+        }
+      } catch (e) { results.mtMenu = { error: e.message }; }
+      // Test 9: Meituan order preview (uses empty addressId — won't actually order)
       try {
         const mtSearchResult = await mtSearch("汉堡", "28.673167", "115.887078");
         if (mtSearchResult.source === "real" && mtSearchResult.shops?.length > 0) {
