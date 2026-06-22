@@ -411,12 +411,8 @@ async function execTool(name, args) {
       case "play": {
         const songs = await searchSongs(args.keyword, 8);
         if (!songs.length) return `No results for "${args.keyword}"`;
-        // Check availability in parallel (outer URL), pick first playable
-        const checks = await Promise.all(songs.map(async s => {
-          try { const u = await getSongUrl(s.id); return u ? s : null; } catch { return null; }
-        }));
-        const pick = checks.find(Boolean);
-        if (!pick) return `"${args.keyword}" 的搜索结果无可播放歌曲`;
+        // Pick first result; player resolves URL on its side (avoids filtering out correct songs)
+        const pick = songs[0];
         // Fallback: try song detail API if search didn't return cover
         let cover = pick.coverUrl;
         if (!cover) {
