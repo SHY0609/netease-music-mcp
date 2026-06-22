@@ -405,21 +405,30 @@ async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
-  // API — 最少参数
-  const result = await mtApi("/openh5/v2/poi/menuproducts", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      wm_poi_id: "-100",
-      poi_id_str: shopId,
-      wm_latitude: "28673167",
-      wm_longitude: "115887078",
-      openh5_uuid: uuid,
-      uuid: uuid,
-      platform: "3",
-      partner: "4",
-    }).toString(),
-  });
+  // API — 试多个常见 tag
+  const tagIds = ["1185057537", "914597353", ""]; // 塔斯汀tag, 汉堡tag, 无tag
+  let result = null;
+  for (const tagId of tagIds) {
+    const params = {
+      wm_poi_id: "-100", poi_id_str: shopId,
+      wm_latitude: "28673167", wm_longitude: "115887078",
+      openh5_uuid: uuid, uuid: uuid,
+      platform: "3", partner: "4",
+    };
+    if (tagId) {
+      params.spu_tag_id = tagId;
+      params.support_new_page_v3 = "true";
+      params.sort_type = "1";
+      params.tag_type = "1";
+    }
+    result = await mtApi("/openh5/v2/poi/menuproducts", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+    // 有数据就停
+    if (result?.data?.code === 0 && result.data.data?.product_count > 0) break;
+  }
 
   const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
