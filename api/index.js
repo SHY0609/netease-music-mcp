@@ -465,7 +465,7 @@ async function mtShopMenu(shopId) {
   return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
 }
 
-async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds) {
+async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   if (!shopId || !itemId) return { source: "error", reason: "shopId and itemId required" };
 
@@ -485,6 +485,7 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds) {
       count: qty,
       attr_ids: attrIds || [],
       activityTag: "",
+      remark: remark || "",
     }],
     expected_arrival_time: 0,
     lat: 0, lng: 0,
@@ -533,7 +534,7 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds) {
   return { source: "error", reason: "preview_failed", raw: rawStr, httpStatus: result?.status };
 }
 
-async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, recipientName, recipientPhone, recipientAddress) {
+async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, remark, recipientName, recipientPhone, recipientAddress) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   if (!shopId || !itemId || !addressId) return { source: "error", reason: "shopId, itemId, and addressId required" };
 
@@ -551,6 +552,7 @@ async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, recip
       count: qty,
       attr_ids: attrIds || [],
       activityTag: "",
+      remark: remark || "",
     }],
     expected_arrival_time: 0,
     lat: 0, lng: 0,
@@ -730,17 +732,18 @@ async function execTool(name, args) {
       }
       case "mt_order": {
         const confirm = args.confirm || false;
+        const remark = args.remark || "";
         if (confirm && args.addressId) {
           // 真正提交订单！
           const order = await mtOrderSubmit(args.shopId, args.itemId, args.addressId,
-            args.quantity || 1, args.attrIds || [], "", "", "");
+            args.quantity || 1, args.attrIds || [], remark, "", "", "");
           return JSON.stringify(order);
         }
         // 默认：preview 模式
         const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId || "",
-          args.quantity || 1, args.attrIds || []);
+          args.quantity || 1, args.attrIds || [], remark);
         if (order.source === "real") {
-          return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}\n\n确认下单请提供收货地址并设置 confirm=true`;
+          return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}\n备注: ${remark || "无"}\n\n确认下单请提供收货地址并设置 confirm=true`;
         }
         return JSON.stringify(order);
       }
