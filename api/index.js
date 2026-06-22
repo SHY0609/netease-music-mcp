@@ -401,6 +401,20 @@ async function mtGetAddresses() {
   }
 }
 
+async function mtSpuDetail(spuIds) {
+  if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
+  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const ids = (Array.isArray(spuIds) ? spuIds : [spuIds]).slice(0, 20);
+  const eps = ["/openh5/v2/poi/spu/batchQuery", "/openh5/poi/spu/detail", "/openh5/spu/detail"];
+  for (const ep of eps) {
+    const r = await mtApi(ep, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ origin_spu_ids: ids.join(","), spu_ids: ids.join(","), wm_latitude: "28673167", wm_longitude: "115887078", openh5_uuid: uuid, uuid: uuid, platform: "3" }).toString() });
+    if (r?.data?.code === 0) return { source: "real", endpoint: ep, raw: JSON.stringify(r.data).slice(0, 1000) };
+    if (r?.data?.code !== undefined) return { source: "error", endpoint: ep, code: r.data.code, msg: r.data.msg, raw: JSON.stringify(r.data).slice(0, 400) };
+  }
+  return { source: "error", reason: "all_404" };
+}
+
 async function mtShopMenu(shopId) {
   if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
@@ -1034,7 +1048,18 @@ export default async function handler(req, res) {
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "", raw: menuResult.raw || "" };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: 只看搜索自带菜品的店铺下单
+      // Test 9: SPU detail by ID (bypass menu API)
+      try {
+        if (mtResult.source === "real" && mtResult.shops?.length > 0) {
+          const shop = mtResult.shops.find(s => s.products?.length > 0);
+          const prodId = shop?.products?.[0]?.id;
+          if (prodId) {
+            const detail = await mtSpuDetail([prodId]);
+            results.mtSpuDetail = { ok: detail.source === "real", endpoint: detail.endpoint || "", raw: detail.raw || "", code: detail.code || "", msg: detail.msg || "" };
+          }
+        }
+      } catch (e) { results.mtSpuDetail = { error: e.message }; }
+      // Test 10: 只看搜索自带菜品的店铺下单
       try {
         if (mtResult.source === "real") {
           const shopsWithProducts = mtResult.shops?.filter(s => s.products?.length > 0) || [];
