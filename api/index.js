@@ -423,12 +423,6 @@ async function mtShopMenu(shopId) {
       params.tag_type = "1";
     }
     params.originUrl = `https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=${shopId}&wm_poi_id=-100`;
-    params.link_identifier_info = "";
-    params.riskLevel = "71";
-    params.optimusCode = "10";
-    // _token 基于不含 _token 的原始 params
-    const { _token: _, ...tokenParams } = params;
-    params._token = mtMakeToken(tokenParams);
     result = await mtApi("/openh5/v2/poi/menuproducts", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
