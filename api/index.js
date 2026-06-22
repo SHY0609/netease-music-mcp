@@ -406,6 +406,7 @@ async function mtShopMenu(shopId) {
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
 
   // 先尝试不带 tag 拿菜单（适配所有店铺类型）
+  let tagRaw = "";
   let result = await mtApi("/openh5/v2/poi/menuproducts", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -433,6 +434,7 @@ async function mtShopMenu(shopId) {
           platform: "3", partner: "4",
         }).toString(),
       });
+      tagRaw = JSON.stringify(tagRes?.data || "").slice(0, 500);
       if (tagRes?.data?.code === 0) {
         const tags = tagRes.data.data?.tag_list || tagRes.data.data?.tags || [];
         if (tags.length > 0) tagId = String(tags[0].tag_id || tags[0].id || "");
@@ -478,9 +480,9 @@ async function mtShopMenu(shopId) {
         })),
       };
     });
-    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr };
+    return { source: "real", count: items.length, products: items.slice(0, 10), raw: rawStr, tagRaw: tagRaw || "" };
   }
-  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status };
+  return { source: "error", reason: "menu_failed", raw: rawStr, httpStatus: result?.status, tagRaw: tagRaw || "" };
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
@@ -1045,7 +1047,7 @@ export default async function handler(req, res) {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", tagRaw: menuResult.tagRaw || "", reason: menuResult.reason || "", shopName: mtResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
       // Test 9: Meituan order preview (uses same shop + menu)
