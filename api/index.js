@@ -1032,7 +1032,7 @@ export default async function handler(req, res) {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menuResult = await mtShopMenu(shopId);
-          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "" };
+          results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "", raw: menuResult.raw || "" };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
       // Test 9: Meituan order preview (prefer shop with products in search, or use menu)
