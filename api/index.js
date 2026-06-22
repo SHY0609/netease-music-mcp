@@ -350,7 +350,7 @@ async function mtSearch(keyword, lat, lng) {
     try {
       const d = JSON.parse(m.string_data || "{}");
       const products = (d.product_list || []).map(function(p) { return {
-        id: String(p.product_spu_id || ""), name: p.product_name || "",
+        id: String(p.product_spu_id || ""), skuId: String(p.product_sku_id || ""), name: p.product_name || "",
         price: p.price || p.activity_info?.activity_price || "", monthSales: p.month_sales || 0,
         pic: p.picture || ""
       }});
@@ -1062,21 +1062,24 @@ export default async function handler(req, res) {
           }
         }
       } catch (e) { results.mtSpuDetail = { error: e.message }; }
-      // Test 10: 用菜单 SKU 下单（不再用搜索 product ID）
+      // Test 10: 直接用搜索 SKU 下单（搜索结果已有 product_sku_id！）
       try {
-        if (menuResult.source === "real" && menuResult.products?.length > 0) {
-          const prod = menuResult.products[0];
-          const skuId = prod.skus?.[0]?.id || prod.id;
-          const attrs = prod.attrIds || [];
-          const orderResult = await mtPlaceOrder(shopId, skuId, "1950000002", 1, attrs);
-          results.mtOrder = {
-            orderOk: orderResult.source === "real",
-            totalPrice: orderResult.totalPrice || "",
-            deliveryFee: orderResult.deliveryFee || "",
-            productName: prod.name || "",
-            skuId: skuId || "",
-            orderRaw: orderResult.raw || orderResult.reason || "",
-          };
+        if (mtResult.source === "real") {
+          const shop = mtResult.shops?.find(s => s.products?.length > 0);
+          const prod = shop?.products?.[0];
+          if (shop && prod && prod.skuId) {
+            const orderResult = await mtPlaceOrder(shop.id, prod.skuId, "1950000002", 1, []);
+            results.mtOrder = {
+              orderOk: orderResult.source === "real",
+              totalPrice: orderResult.totalPrice || "",
+              deliveryFee: orderResult.deliveryFee || "",
+              productName: prod.name || "",
+              skuId: prod.skuId || "",
+              orderRaw: orderResult.raw || orderResult.reason || "",
+            };
+          } else {
+            results.mtOrder = { reason: "no search product with skuId", shopsWithProducts: mtResult.shops?.filter(s => s.products?.length > 0).length || 0, firstSkuId: prod?.skuId || "missing" };
+          }
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
 
