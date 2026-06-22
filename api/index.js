@@ -396,8 +396,91 @@ async function mtGetAddresses() {
 }
 
 async function mtPlaceOrder(shopId, itemId, addressId, quantity) {
-  return { source: "mock_fallback", reason: "mtgsig_required",
-    hint: "下单需要完整的 mtgsig + _token + 订单参数逆向，暂未实现。" };
+  if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
+  if (!shopId || !itemId) return { source: "error", reason: "shopId and itemId required" };
+
+  const qty = quantity || 1;
+  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const now = Date.now();
+
+  // 先试 order/preview（预下单/价格计算）
+  try {
+    const previewBody = new URLSearchParams({
+      wm_latitude: "28673167", wm_longitude: "115887078",
+      wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+      openh5_uuid: uuid, uuid: uuid,
+      poi_id_str: shopId,
+      product_spu_id: itemId,
+      quantity: String(qty),
+      address_id: addressId || "",
+      req_time: String(now),
+      wm_ctype: "openapi", wm_dtype: "openapi",
+    }).toString();
+
+    const preview = await mtApi("/openh5/order/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: previewBody,
+    });
+
+    if (preview && preview.ok && preview.data) {
+      const data = preview.data.data || preview.data;
+      return {
+        source: "real",
+        step: "preview",
+        totalPrice: data.total_price || data.total || "",
+        deliveryFee: data.delivery_fee || data.shipping_fee || "",
+        discount: data.discount || "",
+        productPrice: data.product_price || "",
+        raw: JSON.stringify(data).slice(0, 500),
+      };
+    }
+
+    // 如果 preview 不是 200，记录原始响应用于调试
+    const previewRaw = preview?.raw || preview?.data || "";
+    console.log("order preview raw:", JSON.stringify(previewRaw).slice(0, 200));
+  } catch (e) {
+    console.log("order preview error:", e.message);
+  }
+
+  // 如果 preview 失败，试直接 create
+  try {
+    const createBody = new URLSearchParams({
+      wm_latitude: "28673167", wm_longitude: "115887078",
+      openh5_uuid: uuid, uuid: uuid,
+      poi_id_str: shopId,
+      product_spu_id: itemId,
+      quantity: String(qty),
+      address_id: addressId || "",
+      req_time: String(now),
+      wm_ctype: "openapi",
+    }).toString();
+
+    const order = await mtApi("/openh5/order/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: createBody,
+    });
+
+    if (order && order.ok && order.data) {
+      const data = order.data.data || order.data;
+      return {
+        source: "real",
+        step: "created",
+        orderId: data.order_id || data.orderId || "",
+        totalPrice: data.total_price || data.total || "",
+        status: data.status || "",
+        raw: JSON.stringify(data).slice(0, 500),
+      };
+    }
+    return {
+      source: "error",
+      reason: "order_failed",
+      raw: JSON.stringify(order?.data || order?.raw || "").slice(0, 300),
+    };
+  } catch (e) {
+    return { source: "error", reason: "api_error", hint: e.message };
+  }
 }
 
 async function addToPlaylist(pid, songId) {
@@ -794,6 +877,11 @@ export default async function handler(req, res) {
         const mtResult = await mtSearch("汉堡", "28.673167", "115.887078");
         results.mtSearch = { ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "" };
       } catch (e) { results.mtSearch = { error: e.message }; }
+      // Test 7: Meituan addresses
+      try {
+        const addrResult = await mtGetAddresses();
+        results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "" };
+      } catch (e) { results.mtAddresses = { error: e.message }; }
 
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(results));
