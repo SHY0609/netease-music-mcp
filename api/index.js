@@ -1041,10 +1041,12 @@ export default async function handler(req, res) {
         results.mtAddresses = { ok: addrResult.source === "real", count: addrResult.count || 0, firstAddr: addrResult.addresses?.[0]?.address?.slice(0, 30) || "", reason: addrResult.reason || "", raw: addrResult.raw || "", httpStatus: addrResult.httpStatus || "" };
       } catch (e) { results.mtAddresses = { error: e.message }; }
       // Test 8: Meituan shop menu (uses same shop from mtSearch)
+      let menuResult = { source: "error" };
+      let shopId = "";
       try {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
-          const shopId = mtResult.shops[0].id;
-          const menuResult = await mtShopMenu(shopId);
+          shopId = mtResult.shops[0].id;
+          menuResult = await mtShopMenu(shopId);
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, reason: menuResult.reason || "", shopId: shopId, shopName: mtResult.shops[0].name, tagLog: menuResult.tagLog || "", raw: menuResult.raw || "" };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
@@ -1059,7 +1061,23 @@ export default async function handler(req, res) {
           }
         }
       } catch (e) { results.mtSpuDetail = { error: e.message }; }
-      // Test 10: 只看搜索自带菜品的店铺下单
+      // Test 10: 用菜单 SKU 下单（不再用搜索 product ID）
+      try {
+        if (menuResult.source === "real" && menuResult.products?.length > 0) {
+          const prod = menuResult.products[0];
+          const skuId = prod.skus?.[0]?.id || prod.id;
+          const attrs = prod.attrIds || [];
+          const orderResult = await mtPlaceOrder(shopId, skuId, "1950000002", 1, attrs);
+          results.mtOrder = {
+            orderOk: orderResult.source === "real",
+            totalPrice: orderResult.totalPrice || "",
+            deliveryFee: orderResult.deliveryFee || "",
+            productName: prod.name || "",
+            skuId: skuId || "",
+            orderRaw: orderResult.raw || orderResult.reason || "",
+          };
+        }
+      } catch (e) { results.mtOrder = { error: e.message }; }
       try {
         if (mtResult.source === "real") {
           const shopsWithProducts = mtResult.shops?.filter(s => s.products?.length > 0) || [];
