@@ -1038,11 +1038,15 @@ export default async function handler(req, res) {
       try {
         if (mtResult.source === "real") {
           const shopsWithProducts = mtResult.shops?.filter(s => s.products?.length > 0) || [];
+          const fp = shopsWithProducts[0]?.products?.[0];
           results.mtOrder = {
             shopsWithProducts: shopsWithProducts.length,
             firstShop: shopsWithProducts[0]?.name || "",
-            firstProduct: shopsWithProducts[0]?.products?.[0]?.name || "",
-            firstPrice: shopsWithProducts[0]?.products?.[0]?.price || "",
+            firstProduct: fp?.name || "",
+            firstPrice: fp?.price || "",
+            firstProductId: fp?.id || "",
+            firstSkuId: fp?.skuId || "",
+            firstProductRaw: fp?.raw || "",
           };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
