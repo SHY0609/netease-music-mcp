@@ -531,6 +531,75 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds) {
   return { source: "error", reason: "preview_failed", raw: rawStr, httpStatus: result?.status };
 }
 
+async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, recipientName, recipientPhone, recipientAddress) {
+  if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
+  if (!shopId || !itemId || !addressId) return { source: "error", reason: "shopId, itemId, and addressId required" };
+
+  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const qty = quantity || 1;
+
+  const orderData = {
+    wm_poi_id: "-100",
+    poi_id_str: shopId,
+    wm_order_pay_type: 2,
+    cart_id: "",
+    foodlist: [{
+      skuId: Number(itemId),
+      id: Number(itemId),
+      count: qty,
+      attr_ids: attrIds || [],
+      activityTag: "",
+    }],
+    expected_arrival_time: 0,
+    lat: 0, lng: 0,
+    orderToken: "",
+    nb_app: "wap",
+    pay_sdk_version: "1.1.8",
+    callback_info: { activity_callback_info: "" },
+    accepted_select_coupon: [],
+    addr_longitude: 0, addr_latitude: 0,
+    recipient_name: recipientName || "",
+    recipient_phone: recipientPhone || "",
+    recipient_gender: "",
+    recipient_address: recipientAddress || "",
+    house_number: {},
+    addr_id: Number(addressId),
+    wx_pay_params: { orderPayChannel: 1 },
+    ext_param: { sqt_scene: "", sqtToken: "" },
+    info: { time: Math.floor(Date.now() / 1000), channel: 1001, ctime: Math.floor(Date.now() / 1000), logType: "S", cType: "andriod" },
+    wm_open_id: "",
+  };
+
+  const bodyParams = new URLSearchParams({
+    data: JSON.stringify(orderData),
+    wm_latitude: "28673167", wm_longitude: "115887078",
+    wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+    wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+    openh5_uuid: uuid, uuid: uuid,
+  }).toString();
+
+  const result = await mtApi("/openh5/order/v2/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: bodyParams,
+  });
+
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 600);
+  if (result && result.ok && result.data?.code === 0) {
+    const d = result.data.data || {};
+    return {
+      source: "real",
+      step: "submitted",
+      orderId: d.orderId || d.order_id || d.orderIdStr || "",
+      totalPrice: d.totalPrice || d.total || d.total_price || "",
+      status: d.status || d.orderStatus || "",
+      payUrl: d.payUrl || d.pay_url || "",
+      raw: rawStr,
+    };
+  }
+  return { source: "error", reason: "submit_failed", raw: rawStr, httpStatus: result?.status };
+}
+
 async function addToPlaylist(pid, songId) {
   // trackIds MUST be JSON array format: "[123456]" — verified 2025-06-20
   const res = await fetch("https://music.163.com/api/playlist/manipulate/tracks", {
@@ -574,8 +643,8 @@ const tools = [
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "mt_menu", description: "Get full menu/products for a Meituan shop.",
     inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
-  { name: "mt_order", description: "Create an order on Meituan. Returns payment link.",
-    inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 } }, required: ["shopId", "itemId", "addressId"] } },
+  { name: "mt_order", description: "Preview or confirm a Meituan order. Call first without confirm to see price, then with confirm=true to submit.",
+    inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, confirm: { type: "boolean", default: false } }, required: ["shopId", "itemId"] } },
   { name: "current_song", description: "Get current song info, playback position, and lyrics around current position. AI can see what you're hearing right now.",
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "lyrics", description: "Get full lyrics for the current or specified song.",
@@ -658,7 +727,19 @@ async function execTool(name, args) {
         return JSON.stringify(menu);
       }
       case "mt_order": {
-        const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1);
+        const confirm = args.confirm || false;
+        if (confirm && args.addressId) {
+          // 真正提交订单！
+          const order = await mtOrderSubmit(args.shopId, args.itemId, args.addressId,
+            args.quantity || 1, args.attrIds || [], "", "", "");
+          return JSON.stringify(order);
+        }
+        // 默认：preview 模式
+        const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId || "",
+          args.quantity || 1, args.attrIds || []);
+        if (order.source === "real") {
+          return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}\n\n确认下单请提供收货地址并设置 confirm=true`;
+        }
         return JSON.stringify(order);
       }
       case "current_song": {
