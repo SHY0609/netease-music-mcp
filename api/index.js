@@ -937,16 +937,28 @@ export default async function handler(req, res) {
           results.mtMenu = { ok: menuResult.source === "real", count: menuResult.count || 0, raw: menuResult.raw || "", reason: menuResult.reason || "", shopName: mtSearchResult.shops[0].name };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // Test 9: Meituan order preview (use menu to get real skuId)
+      // Test 9: Meituan order preview (use menu SKU, not search product)
       try {
-        const mt2 = await mtSearch("黄焖鸡", "28.673167", "115.887078");
-        const shop = mt2.shops?.find(s => s.products?.length > 0);
+        const mt2 = await mtSearch("汉堡", "28.673167", "115.887078");
+        const shop = mt2.shops?.[0];
         if (shop) {
-          const product = shop.products[0];
-          const orderResult = await mtPlaceOrder(shop.id, product.id, "test-no-real-order", 1);
-          results.mtOrder = { ok: orderResult.source === "real", step: orderResult.step || "", raw: orderResult.raw || "", reason: orderResult.reason || "", shopName: shop.name, productName: product.name, price: product.price };
+          const menu = await mtShopMenu(shop.id);
+          if (menu.source === "real" && menu.products?.length > 0) {
+            const prod = menu.products[0];
+            const skuId = prod.skus?.[0]?.id || prod.id;
+            const orderResult = await mtPlaceOrder(shop.id, skuId, "test-no-real-order", 1);
+            results.mtOrder = {
+              ok: orderResult.source === "real", step: orderResult.step || "",
+              totalPrice: orderResult.totalPrice || "", deliveryFee: orderResult.deliveryFee || "",
+              raw: orderResult.raw || "", reason: orderResult.reason || "",
+              shopName: shop.name, productName: prod.name, price: prod.price,
+              skuId: skuId,
+            };
+          } else {
+            results.mtOrder = { reason: "menu_empty" };
+          }
         } else {
-          results.mtOrder = { reason: "no_product_in_results" };
+          results.mtOrder = { reason: "no_shop" };
         }
       } catch (e) { results.mtOrder = { error: e.message }; }
 
