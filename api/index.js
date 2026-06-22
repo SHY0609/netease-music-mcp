@@ -422,6 +422,10 @@ async function mtShopMenu(shopId) {
       params.sort_type = "1";
       params.tag_type = "1";
     }
+    // _token 必须加（基于不含 _token 的原始 params）
+    const tokenParams = { ...params };
+    const _token = mtMakeToken(tokenParams);
+    params._token = _token;
     result = await mtApi("/openh5/v2/poi/menuproducts", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
