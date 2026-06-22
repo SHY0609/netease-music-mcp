@@ -435,7 +435,7 @@ async function mtShopMenu(shopId) {
     if (result?.data?.code === 0 && result.data.data?.product_count > 0) break;
   }
 
-  const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 2000);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
     const list = d.product_spu_list || d.spu_list || d.spuList || d.list || [];
