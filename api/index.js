@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { BG_IMAGE } from "../lib/bg.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { getMtgsig } = require("../lib/mt-signer-v2.cjs");
+const { getMtgsig, init: initSigner } = require("../lib/mt-signer-v2.cjs");
+// 预初始化——避免冷启动超时
+if (MT_COOKIE) { initSigner(MT_COOKIE).catch(() => {}); }
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
