@@ -686,9 +686,10 @@ export default async function handler(req, res) {
     if (path === "/api/debug") {
       const results = { version: "2.0.0", deployed: "2025-06-20T17:00Z", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel US", timestamp: new Date().toISOString() };
       try {
-        // Test 1: search
-        const search = await searchSongs("Justin Bieber", 2);
-        results.search = { ok: search.length > 0, count: search.length, first: search[0]?.name || "", coverUrl: (search[0]?.coverUrl || "(empty)").slice(0, 80) };
+        // Test 1: search (use ?kw=xxx to test custom keyword)
+        const testKw = url.searchParams.get("kw") || "Justin Bieber";
+        const search = await searchSongs(testKw, 5);
+        results.search = { keyword: testKw, ok: search.length > 0, count: search.length, first: search[0]?.name || "", firstArtist: search[0]?.artist || "", coverUrl: (search[0]?.coverUrl || "(empty)").slice(0, 80) };
       } catch (e) { results.search = { error: e.message }; }
       try {
         // Test 2: playlists
