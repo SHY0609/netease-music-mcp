@@ -144,8 +144,8 @@ function extractCover(s) {
 async function searchSongs(kw, limit = 5) {
   const r = await apiGet(`/api/search/get?s=${encodeURIComponent(kw)}&type=1&limit=${limit}`);
   return (r.result?.songs || []).map(s => ({
-    id: String(s.id), name: s.name,
-    artist: (s.artists || s.ar || []).map(a => a.name).join(" / "),
+    id: String(s.id), name: s.name || s.songName || ("Song " + s.id),
+    artist: (s.artists || s.ar || (s.artist ? [s.artist] : [])).map(a => typeof a === "string" ? a : (a.name || "")).join(" / ") || "未知歌手",
     album: (s.album || s.al || {}).name || "",
     coverUrl: extractCover(s),
     durationMs: s.duration || s.dt || 0,
