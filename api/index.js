@@ -973,6 +973,9 @@ export default async function handler(req, res) {
 
     // Debug: comprehensive API test (add ?addPid=X&addSid=Y for detailed add trace)
     if (path === "/api/debug") {
+      if (url.searchParams.get("key") !== (process.env.DEBUG_KEY || "debug")) {
+        res.statusCode = 403; res.end(JSON.stringify({ error: "key required" })); return;
+      }
       const results = { version: "2.1.0", deployed: "mt-addr-raw", cookieLen: COOKIE.length, mtCookieLen: MT_COOKIE.length, server: "Vercel HK", timestamp: new Date().toISOString() };
       try {
         // Test 1: search (use ?kw=xxx to test custom keyword)
