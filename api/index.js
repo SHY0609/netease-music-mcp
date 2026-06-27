@@ -751,9 +751,15 @@ async function execTool(name, args) {
         return JSON.stringify(d);
       }
       case "mt_search": {
+        // 强制等待签名器就绪（解决冷启动问题）
+        const { isReady } = require("../lib/mt-signer-v2.cjs");
+        if (!isReady() && MT_COOKIE) {
+          const { init } = require("../lib/mt-signer-v2.cjs");
+          await init(MT_COOKIE);
+        }
         let result = await mtSearch(args.keyword, args.lat, args.lng);
         if (result.source !== "real") {
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 3000));
           result = await mtSearch(args.keyword, args.lat, args.lng);
         }
         // 精简返回：去重+限制大小，避免 MCP 序列化超限
