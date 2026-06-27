@@ -1116,6 +1116,7 @@ export default async function handler(req, res) {
     }
 
     // Ping — returns git commit to verify which version is actually deployed
+    if (path === "/api/test-search") { const kw = url.searchParams.get("kw") || "汉堡"; try { const r = await mtSearch(kw); res.statusCode = 200; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ keyword: kw, ok: r.source === "real", count: r.count, firstShop: r.shops?.[0]?.name })); } catch(e) { res.statusCode = 500; res.end(JSON.stringify({error:e.message})); } return; }
     if (path === "/api/ping") {
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
