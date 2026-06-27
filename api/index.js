@@ -742,9 +742,11 @@ async function execTool(name, args) {
         return JSON.stringify(d);
       }
       case "mt_search": {
-        const result = await mtSearch(args.keyword, args.lat, args.lng);
+        // 如果首次失败，等2秒重试（可能是冷启动/初始化延迟）
+        let result = await mtSearch(args.keyword, args.lat, args.lng);
         if (result.source !== "real") {
-          console.error("mt_search MCP failed:", JSON.stringify({ reason: result.reason, keyword: args.keyword }));
+          await new Promise(r => setTimeout(r, 2000));
+          result = await mtSearch(args.keyword, args.lat, args.lng);
         }
         return JSON.stringify(result);
       }
