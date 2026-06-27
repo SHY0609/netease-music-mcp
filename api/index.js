@@ -7,7 +7,7 @@ const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
 // 预初始化——避免冷启动超时
-if (MT_COOKIE) { initSigner(MT_COOKIE).catch(() => {}); }
+if (MT_COOKIE) { console.log("pre-init signer start, cookieLen:", MT_COOKIE.length); initSigner(MT_COOKIE).then(() => console.log("pre-init signer done")).catch(e => console.error("pre-init signer failed:", e.message)); }
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const REF = "https://music.163.com/";
 const H = { "User-Agent": UA, "Referer": REF, cookie: COOKIE };
