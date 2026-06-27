@@ -751,11 +751,11 @@ async function execTool(name, args) {
         return JSON.stringify(d);
       }
       case "mt_search": {
-        let result = await mtSearch(args.keyword, args.lat, args.lng);
+        const keyword = args.keyword || (typeof args === "string" ? args : "汉堡");
+        let result = await mtSearch(keyword, args.lat, args.lng);
         if (result.source !== "real") {
-          // 签名器可能冷启动未就绪，等2秒重试
-          await new Promise(r => setTimeout(r, 2000));
-          result = await mtSearch(args.keyword, args.lat, args.lng);
+          await new Promise(r => setTimeout(r, 3000));
+          result = await mtSearch(keyword, args.lat, args.lng);
         }
         // 精简返回：去重+限制大小，避免 MCP 序列化超限
         if (result.shops) {
