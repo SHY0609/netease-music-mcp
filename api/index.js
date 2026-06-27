@@ -269,7 +269,11 @@ async function mtGetSign(url, bodyString) {
     const fullUrl = url + (url.includes("?") ? "&" : "?") +
       "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
     const sig = await getMtgsig(fullUrl, bodyString || "", MT_COOKIE);
-    if (!sig) console.error("mtgsig: empty signature returned");
+    if (!sig) {
+      console.error("mtgsig EMPTY — signer may not be initialized");
+    } else {
+      console.log("mtgsig OK, length:", sig.length);
+    }
     return { mtgsig: sig, signedUrl: fullUrl };
   } catch (e) {
     console.error("mtgsig error:", e.message, e.stack?.slice(0, 200));
@@ -292,9 +296,14 @@ async function mtApi(path, opts) {
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Windows\"",
     };
-    if (mtgsig) baseHeaders["mtgsig"] = mtgsig;
+    if (mtgsig) {
+      baseHeaders["mtgsig"] = mtgsig;
+      console.log("mtgsig header set, cookieLen:", MT_COOKIE.length);
+    } else {
+      console.error("mtgsig MISSING — request will fail with 403");
+    }
 
-    // 合并 headers: opts.headers 作为基础, baseHeaders 覆盖（确保 mtgsig 不被覆盖）
+    // 合并 headers
     const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
     const { headers: _, ...restOpts } = opts;
     const res = await fetch(signedUrl, { headers: mergedHeaders, ...restOpts });
