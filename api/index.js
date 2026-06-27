@@ -743,6 +743,9 @@ async function execTool(name, args) {
       }
       case "mt_search": {
         const result = await mtSearch(args.keyword, args.lat, args.lng);
+        if (result.source !== "real") {
+          console.error("mt_search MCP failed:", JSON.stringify({ reason: result.reason, keyword: args.keyword }));
+        }
         return JSON.stringify(result);
       }
       case "mt_addresses": {
