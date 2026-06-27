@@ -911,6 +911,7 @@ document.getElementById("testBtn").addEventListener("click",function(){var btn=t
 
 // ─── Vercel handler ─────────────────────────────────────────
 export default async function handler(req, res) {
+  console.error("REQUEST:", req.method, new URL(req.url, "http://h").pathname);
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
