@@ -1128,6 +1128,7 @@ export default async function handler(req, res) {
 
     // MCP POST
     if (req.method === "POST" && path === "/api/mcp") {
+      console.error("MCP POST received");
       let body = req.body;
       if (body === undefined || body === null) {
         const chunks = []; for await (const c of req) chunks.push(c);
@@ -1135,6 +1136,7 @@ export default async function handler(req, res) {
       } else if (typeof body === "string") {
         body = body.trim() ? JSON.parse(body) : {};
       }
+      console.error("MCP body parsed, method:", body.method || (Array.isArray(body) ? "batch" : "unknown"));
       res.setHeader("Content-Type", "application/json");
       if (Array.isArray(body)) {
         const results = []; for (const msg of body) { const r = await handleMcpMessage(msg); if (r) results.push(r); }
@@ -1142,7 +1144,7 @@ export default async function handler(req, res) {
       } else {
         const r = await handleMcpMessage(body);
         if (r) { res.statusCode = 200; res.end(JSON.stringify(r)); }
-        else { res.statusCode = 202; res.end(""); }
+        else { console.error("MCP returning 202 (no response)"); res.statusCode = 202; res.end(""); }
       }
       return;
     }
