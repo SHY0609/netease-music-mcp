@@ -1130,7 +1130,8 @@ export default async function handler(req, res) {
     }
 
     // MCP POST
-    if (req.method === "POST" && path === "/api/mcp") {
+    if (req.method === "POST" && (path === "/api/mcp" || path.startsWith("/api/"))) {
+      console.error("MCP-like POST:", path);
       console.error("MCP POST received");
       let body = req.body;
       if (body === undefined || body === null) {
