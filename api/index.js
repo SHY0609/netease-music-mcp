@@ -742,11 +742,15 @@ async function execTool(name, args) {
         return JSON.stringify(d);
       }
       case "mt_search": {
-        // 如果首次失败，等2秒重试（可能是冷启动/初始化延迟）
         let result = await mtSearch(args.keyword, args.lat, args.lng);
         if (result.source !== "real") {
           await new Promise(r => setTimeout(r, 2000));
           result = await mtSearch(args.keyword, args.lat, args.lng);
+        }
+        // 精简返回：去重+限制大小，避免 MCP 序列化超限
+        if (result.shops) {
+          result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: (s.products||[]).slice(0,3).map(p => ({ id: p.id, skuId: p.skuId, name: p.name, price: p.price, monthSales: p.monthSales })) }));
+          delete result._rawModules;
         }
         return JSON.stringify(result);
       }
