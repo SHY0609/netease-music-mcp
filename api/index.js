@@ -1023,8 +1023,22 @@ export default async function handler(req, res) {
         results.playlists = { ok: true, count: pl.length, names: pl.slice(0, 5).map(p => p.name) };
       } catch (e) { results.playlists = { error: e.message }; }
       try {
-        // Test 3: song URL (free song)
-        let url = await getSongUrl("186016");
+        // Test 3: song URL (use ?sid=ID to test specific song, default 186016)
+        const testSid = url.searchParams.get("sid") || "186016";
+        // Try weapi directly first (for debugging HK connectivity)
+        try {
+          const { weapi } = await import("../lib/netease.js");
+          const body = weapi({ ids: `[${testSid}]`, level: "exhigh", encodeType: "mp3" });
+          const wr = await fetch("https://music.163.com/weapi/song/enhance/player/url/v1", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded", cookie: COOKIE, referer: "https://music.163.com/" },
+            body,
+          });
+          const wj = await wr.json();
+          results.weapiDirect = { code: wj.code, url: (wj.data?.[0]?.url || "(empty)").slice(0, 100) };
+        } catch (e) { results.weapiDirect = { error: e.message }; }
+        // Normal getSongUrl (with all fallbacks)
+        let url = await getSongUrl(testSid);
         results.songUrl = { ok: !!url, url: (url || "(empty)").slice(0, 80) };
       } catch (e) { results.songUrl = { error: e.message }; }
       try {
