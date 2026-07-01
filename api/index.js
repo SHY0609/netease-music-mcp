@@ -14,7 +14,7 @@ const H = { "User-Agent": UA, "Referer": REF, cookie: COOKIE };
 
 function fm(s) { const m = Math.floor((s||0)/60), sec = Math.floor((s||0)%60); return m+":"+(sec<10?"0":"")+sec; }
 
-// Vercel HK — weapi now works from Hong Kong
+// Vercel is US-based; weapi endpoints are blocked for non-CN IPs.
 
 async function apiGet(path) {
   const res = await fetch(`https://music.163.com${path}`, { headers: H });
@@ -158,28 +158,15 @@ async function searchSongs(kw, limit = 5) {
 }
 
 async function getSongUrl(id) {
+  // Try multiple sources in parallel, return first valid URL
   const candidates = [];
 
-  // 1. WEAPI (now works from Vercel HK!) — VIP songs unlocked
+  // 1. Old API — standard quality (most compatible)
   try {
-    const { weapi } = await import("../lib/netease.js");
-    const body = weapi({ ids: `[${id}]`, level: "exhigh", encodeType: "mp3" });
-    const wr = await fetch("https://music.163.com/weapi/song/enhance/player/url/v1", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie: COOKIE, referer: "https://music.163.com/" },
-      body,
-    });
-    const wj = await wr.json();
-    const url = wj.data?.[0]?.url;
-    if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
-  } catch {}
-
-  // 2. Old API — standard quality (most compatible)
-  if (!candidates.length) { try {
     const r = await apiGet(`/api/song/enhance/player/url?ids=[${id}]&br=320000`);
     const url = r.data?.[0]?.url;
     if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
-  } catch {} }
+  } catch {}
 
   // 2. Old API — lower quality fallback (128kbps, may work when 320k fails)
   if (!candidates.length) {
@@ -277,19 +264,29 @@ function mtDiagnose(result, cookiePresent) {
   return null;
 }
 
-async function mtGetSign(url, bodyString) {
+async function mtGetSign(url, bodyString, retry = 0) {
+  const MAX_RETRIES = 3;
   try {
     const fullUrl = url + (url.includes("?") ? "&" : "?") +
       "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
     const sig = await getMtgsig(fullUrl, bodyString || "", MT_COOKIE);
     if (!sig) {
-      console.error("mtgsig EMPTY — signer may not be initialized");
-    } else {
-      console.log("mtgsig OK, length:", sig.length);
+      console.error("mtgsig EMPTY — signer may not be initialized, retry:", retry);
+      if (retry < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, 1500));
+        return mtGetSign(url, bodyString, retry + 1);
+      }
+      throw new Error("mtgsig EMPTY after " + MAX_RETRIES + " retries");
     }
+    console.log("mtgsig OK, length:", sig.length);
     return { mtgsig: sig, signedUrl: fullUrl };
   } catch (e) {
-    console.error("mtgsig error:", e.message, e.stack?.slice(0, 200));
+    console.error("mtgsig error:", e.message, "retry:", retry);
+    if (retry < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, 1500));
+      return mtGetSign(url, bodyString, retry + 1);
+    }
+    console.error("mtgsig FAILED after " + MAX_RETRIES + " retries — request will 403");
     return { mtgsig: "", signedUrl: url };
   }
 }
@@ -309,12 +306,12 @@ async function mtApi(path, opts) {
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Windows\"",
     };
-    if (mtgsig) {
-      baseHeaders["mtgsig"] = mtgsig;
-      console.log("mtgsig header set, cookieLen:", MT_COOKIE.length);
-    } else {
-      console.error("mtgsig MISSING — request will fail with 403");
+    if (!mtgsig) {
+      console.error("mtgsig MISSING — aborting request to avoid guaranteed 403");
+      return { ok: false, status: 403, data: null, _reason: "mtgsig_empty" };
     }
+    baseHeaders["mtgsig"] = mtgsig;
+    console.log("mtgsig header set, len:", mtgsig.length, "cookieLen:", MT_COOKIE.length);
 
     // 合并 headers
     const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
@@ -350,11 +347,18 @@ async function mtSearch(keyword, lat, lng) {
   const _token = mtMakeToken(bodyParams);
   bodyParams._token = _token;
 
+  console.error("[mtSearch] bodyParams keys:", Object.keys(bodyParams).length, "_token len:", _token.length, "wmLat:", wmLat, "wmLng:", wmLng);
+
   const result = await mtApi("/openh5/search/globalpage", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(bodyParams).toString(),
   });
+
+  console.error("[mtSearch] mtApi result — ok:", result?.ok, "status:", result?.status, "hasData:", !!result?.data);
+  if (result?.status === 403) {
+    console.error("[mtSearch] 403 raw response:", (result?.raw || "").slice(0, 300));
+  }
 
   const reason = mtDiagnose(result, hasCookie);
   if (reason) {
@@ -665,11 +669,17 @@ async function addToPlaylist(pid, songId) {
 const ok = (id, result) => ({ jsonrpc: "2.0", id, result });
 const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 
+const DEPLOY_ID = "diag-" + BUILD_ID;
 const mcpInfo = {
   protocolVersion: "2024-11-05",
-  serverInfo: { name: "home", version: "2.0.0" },
+  serverInfo: { name: "home", version: "2.1.0-" + DEPLOY_ID },
   capabilities: { tools: {} },
 };
+
+// 每次 MCP POST 都打时间戳 + 方法名
+function mcpPostLog(method, extra) {
+  console.error("[MCP-POST " + DEPLOY_ID + "]", new Date().toISOString(), method, extra || "");
+}
 
 const tools = [
   { name: "play", description: "Search and play a song. AI constructs the keyword freely.",
@@ -765,10 +775,14 @@ async function execTool(name, args) {
       }
       case "mt_search": {
         const keyword = args.keyword || (typeof args === "string" ? args : "汉堡");
+        console.error("[mt_search] MCP call — keyword:", keyword, "lat:", args.lat, "lng:", args.lng, "type_lat:", typeof args.lat, "type_lng:", typeof args.lng);
         let result = await mtSearch(keyword, args.lat, args.lng);
+        console.error("[mt_search] attempt 1 — source:", result.source, "reason:", result.reason, "shopCount:", result.count);
         if (result.source !== "real") {
+          console.error("[mt_search] retrying after 3s...");
           await new Promise(r => setTimeout(r, 3000));
           result = await mtSearch(keyword, args.lat, args.lng);
+          console.error("[mt_search] attempt 2 — source:", result.source, "reason:", result.reason, "shopCount:", result.count);
         }
         // 精简返回：去重+限制大小，避免 MCP 序列化超限
         if (result.shops) {
@@ -1023,22 +1037,8 @@ export default async function handler(req, res) {
         results.playlists = { ok: true, count: pl.length, names: pl.slice(0, 5).map(p => p.name) };
       } catch (e) { results.playlists = { error: e.message }; }
       try {
-        // Test 3: song URL (use ?sid=ID to test specific song, default 186016)
-        const testSid = url.searchParams.get("sid") || "186016";
-        // Try weapi directly first (for debugging HK connectivity)
-        try {
-          const { weapi } = await import("../lib/netease.js");
-          const body = weapi({ ids: `[${testSid}]`, level: "exhigh", encodeType: "mp3" });
-          const wr = await fetch("https://music.163.com/weapi/song/enhance/player/url/v1", {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded", cookie: COOKIE, referer: "https://music.163.com/" },
-            body,
-          });
-          const wj = await wr.json();
-          results.weapiDirect = { code: wj.code, url: (wj.data?.[0]?.url || "(empty)").slice(0, 100) };
-        } catch (e) { results.weapiDirect = { error: e.message }; }
-        // Normal getSongUrl (with all fallbacks)
-        let url = await getSongUrl(testSid);
+        // Test 3: song URL (free song)
+        let url = await getSongUrl("186016");
         results.songUrl = { ok: !!url, url: (url || "(empty)").slice(0, 80) };
       } catch (e) { results.songUrl = { error: e.message }; }
       try {
@@ -1159,8 +1159,7 @@ export default async function handler(req, res) {
 
     // MCP POST
     if (req.method === "POST" && (path === "/api/mcp" || path.startsWith("/api/"))) {
-      console.error("MCP-like POST:", path);
-      console.error("MCP POST received");
+      console.error("[MCP-POST " + DEPLOY_ID + "]", new Date().toISOString(), "path:", path);
       let body = req.body;
       if (body === undefined || body === null) {
         const chunks = []; for await (const c of req) chunks.push(c);
@@ -1181,10 +1180,11 @@ export default async function handler(req, res) {
       return;
     }
 
-    // MCP GET
+    // MCP GET — 返回部署 ID 用于确认 Claude 连的是哪个实例
     if (req.method === "GET" && path === "/api/mcp") {
+      console.error("[MCP-GET " + DEPLOY_ID + "]", new Date().toISOString());
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ok: true })); return;
+      res.end(JSON.stringify({ ok: true, deployId: DEPLOY_ID, ts: Date.now() })); return;
     }
 
     // OAuth — 404
