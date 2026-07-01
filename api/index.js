@@ -852,7 +852,7 @@ async function execTool(name, args) {
           minPrice: args.minPrice,
           maxPrice: args.maxPrice,
         }, TB_COOKIE);
-        console.error("[tb_search] result — source:", result.source, "count:", result.count);
+        console.error("[tb_search] result — source:", result.source, "count:", result.count, "reason:", result.reason, "hint:", result.hint, "status:", result.status);
         return JSON.stringify(result);
       }
       case "tb_detail": {
@@ -1169,6 +1169,8 @@ export default async function handler(req, res) {
 
     // Ping — returns git commit to verify which version is actually deployed
     if (path === "/api/test-search") { const kw = url.searchParams.get("kw") || "汉堡"; try { const r = await mtSearch(kw); res.statusCode = 200; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ keyword: kw, ok: r.source === "real", count: r.count, firstShop: r.shops?.[0]?.name })); } catch(e) { res.statusCode = 500; res.end(JSON.stringify({error:e.message})); } return; }
+    // Taobao debug test
+    if (path === "/api/test-tb") { const kw = url.searchParams.get("kw") || "蓝牙耳机"; try { res.statusCode = 200; res.setHeader("Content-Type", "application/json"); const r = await tbSearch(kw, { pageSize: 5 }, TB_COOKIE); res.end(JSON.stringify({ keyword: kw, ...r })); } catch(e) { res.statusCode = 500; res.end(JSON.stringify({error:e.message})); } return; }
     if (path === "/api/ping") {
       res.statusCode = 200; res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
