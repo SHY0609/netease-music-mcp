@@ -266,29 +266,17 @@ function mtDiagnose(result, cookiePresent) {
   return null;
 }
 
-async function mtGetSign(url, bodyString, retry = 0) {
-  const MAX_RETRIES = 3;
+async function mtGetSign(url, bodyString) {
   try {
     const fullUrl = url + (url.includes("?") ? "&" : "?") +
       "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
     const sig = await getMtgsig(fullUrl, bodyString || "", MT_COOKIE);
     if (!sig) {
-      console.error("mtgsig EMPTY — signer may not be initialized, retry:", retry);
-      if (retry < MAX_RETRIES) {
-        await new Promise(r => setTimeout(r, 1500));
-        return mtGetSign(url, bodyString, retry + 1);
-      }
-      throw new Error("mtgsig EMPTY after " + MAX_RETRIES + " retries");
+      console.error("mtgsig EMPTY — signer may not be initialized");
     }
-    console.log("mtgsig OK, length:", sig.length);
-    return { mtgsig: sig, signedUrl: fullUrl };
+    return { mtgsig: sig || "", signedUrl: fullUrl };
   } catch (e) {
-    console.error("mtgsig error:", e.message, "retry:", retry);
-    if (retry < MAX_RETRIES) {
-      await new Promise(r => setTimeout(r, 1500));
-      return mtGetSign(url, bodyString, retry + 1);
-    }
-    console.error("mtgsig FAILED after " + MAX_RETRIES + " retries — request will 403");
+    console.error("mtgsig error:", e.message);
     return { mtgsig: "", signedUrl: url };
   }
 }
@@ -308,12 +296,12 @@ async function mtApi(path, opts) {
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Windows\"",
     };
-    if (!mtgsig) {
-      console.error("mtgsig MISSING — aborting request to avoid guaranteed 403");
-      return { ok: false, status: 403, data: null, _reason: "mtgsig_empty" };
+    if (mtgsig) {
+      baseHeaders["mtgsig"] = mtgsig;
+      console.log("mtgsig header set, cookieLen:", MT_COOKIE.length);
+    } else {
+      console.error("mtgsig MISSING — request will fail with 403");
     }
-    baseHeaders["mtgsig"] = mtgsig;
-    console.log("mtgsig header set, len:", mtgsig.length, "cookieLen:", MT_COOKIE.length);
 
     // 合并 headers
     const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
