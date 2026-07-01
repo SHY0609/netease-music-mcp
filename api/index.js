@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { BG_IMAGE } from "../lib/bg.js";
+import { tbSearch, tbDetail } from "../lib/taobao.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { getMtgsig, init: initSigner, isReady } = require("../lib/mt-signer-v2.cjs");
 const BUILD_ID = randomUUID().slice(0, 8);
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
+const TB_COOKIE = process.env.TAOBAO_COOKIE || "";
 // 预初始化——避免冷启动超时
 if (MT_COOKIE) { console.log("pre-init signer start, cookieLen:", MT_COOKIE.length); initSigner(MT_COOKIE).then(() => console.log("pre-init signer done")).catch(e => console.error("pre-init signer failed:", e.message)); }
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
@@ -708,6 +710,10 @@ const tools = [
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "lyrics", description: "Get full lyrics for the current or specified song.",
     inputSchema: { type: "object", properties: { songId: { type: "string" } }, required: [] } },
+  { name: "tb_search", description: "Search products on Taobao. Returns name, price, sales, shop, and purchase link.",
+    inputSchema: { type: "object", properties: { keyword: { type: "string" }, minPrice: { type: "string" }, maxPrice: { type: "string" }, sort: { type: "string" }, pageSize: { type: "number", default: 20 } }, required: ["keyword"] } },
+  { name: "tb_detail", description: "Get product detail on Taobao — price, coupon, SKUs, shop info.",
+    inputSchema: { type: "object", properties: { itemId: { type: "string" } }, required: ["itemId"] } },
 ];
 
 async function execTool(name, args) {
@@ -836,6 +842,25 @@ async function execTool(name, args) {
         if (!id) return "No song specified";
         const lrc = await getLyricsRaw(id);
         return lrc || "(no lyrics available)";
+      }
+      case "tb_search": {
+        if (!TB_COOKIE) return JSON.stringify({ source: "error", reason: "no_cookie", hint: "请设置 TAOBAO_COOKIE 环境变量" });
+        console.error("[tb_search] keyword:", args.keyword, "minPrice:", args.minPrice, "maxPrice:", args.maxPrice);
+        const result = await tbSearch(args.keyword, {
+          pageSize: args.pageSize || 20,
+          sort: args.sort || "_coefp",
+          minPrice: args.minPrice,
+          maxPrice: args.maxPrice,
+        }, TB_COOKIE);
+        console.error("[tb_search] result — source:", result.source, "count:", result.count);
+        return JSON.stringify(result);
+      }
+      case "tb_detail": {
+        if (!TB_COOKIE) return JSON.stringify({ source: "error", reason: "no_cookie", hint: "请设置 TAOBAO_COOKIE 环境变量" });
+        console.error("[tb_detail] itemId:", args.itemId);
+        const detail = await tbDetail(args.itemId, TB_COOKIE);
+        console.error("[tb_detail] result — source:", detail.source);
+        return JSON.stringify(detail);
       }
       default: return "Unknown tool";
     }
