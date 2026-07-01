@@ -14,7 +14,7 @@ const H = { "User-Agent": UA, "Referer": REF, cookie: COOKIE };
 
 function fm(s) { const m = Math.floor((s||0)/60), sec = Math.floor((s||0)%60); return m+":"+(sec<10?"0":"")+sec; }
 
-// Vercel is US-based; weapi endpoints are blocked for non-CN IPs.
+// Vercel HK — weapi now works from Hong Kong
 
 async function apiGet(path) {
   const res = await fetch(`https://music.163.com${path}`, { headers: H });
@@ -158,15 +158,28 @@ async function searchSongs(kw, limit = 5) {
 }
 
 async function getSongUrl(id) {
-  // Try multiple sources in parallel, return first valid URL
   const candidates = [];
 
-  // 1. Old API — standard quality (most compatible)
+  // 1. WEAPI (now works from Vercel HK!) — VIP songs unlocked
   try {
+    const { weapi } = await import("../lib/netease.js");
+    const body = weapi({ ids: `[${id}]`, level: "exhigh", encodeType: "mp3" });
+    const wr = await fetch("https://music.163.com/weapi/song/enhance/player/url/v1", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: COOKIE, referer: "https://music.163.com/" },
+      body,
+    });
+    const wj = await wr.json();
+    const url = wj.data?.[0]?.url;
+    if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
+  } catch {}
+
+  // 2. Old API — standard quality (most compatible)
+  if (!candidates.length) { try {
     const r = await apiGet(`/api/song/enhance/player/url?ids=[${id}]&br=320000`);
     const url = r.data?.[0]?.url;
     if (url) candidates.push(url.replace(/^http:\/\//, "https://"));
-  } catch {}
+  } catch {} }
 
   // 2. Old API — lower quality fallback (128kbps, may work when 320k fails)
   if (!candidates.length) {
