@@ -387,7 +387,9 @@ async function mtSearch(keyword, lat, lng) {
         addr: d.address || "", score: d.wm_poi_score || "",
         distance: d.distance || "", deliveryTime: d.delivery_time_tip || "",
         shippingFee: d.shipping_fee_tip || "", minPrice: d.min_price_tip || "",
-        monthSales: d.month_sales_tip || "", products: products.slice(0, 5)
+        monthSales: d.month_sales_tip || "",
+        payUrl: d.scheme || ("meituanwaimai://waimai.meituan.com/menu?restaurant_id=-100&poi_id_str=" + (d.poi_id_str || "")),
+        products: products.slice(0, 5)
       });
     } catch {}
   }
@@ -792,7 +794,7 @@ async function execTool(name, args) {
         }
         // 精简返回：去重+限制大小，避免 MCP 序列化超限
         if (result.shops) {
-          result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: (s.products||[]).slice(0,3).map(p => ({ id: p.id, skuId: p.skuId, name: p.name, price: p.price, monthSales: p.monthSales })) }));
+          result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, payUrl: s.payUrl, products: (s.products||[]).slice(0,3).map(p => ({ id: p.id, skuId: p.skuId, name: p.name, price: p.price, monthSales: p.monthSales })) }));
           delete result._rawModules;
         }
         return JSON.stringify(result);
