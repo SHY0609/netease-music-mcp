@@ -527,9 +527,20 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && (path === "/api/mcp" || path.startsWith("/api/"))) {
       let body = await readBody(req);
       if (typeof body === "string" && body.trim()) body = JSON.parse(body);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      if (Array.isArray(body)) { const results = []; for (const msg of body) { const r = await handleMcpMessage(msg); if (r) results.push(r); } res.end(JSON.stringify(results)); }
-      else { const r = await handleMcpMessage(body); if (r) res.end(JSON.stringify(r)); else { res.writeHead(202); res.end(""); } }
+      if (Array.isArray(body)) {
+        const results = []; for (const msg of body) { const r = await handleMcpMessage(msg); if (r) results.push(r); }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(results));
+      } else {
+        const r = await handleMcpMessage(body);
+        if (r) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(r));
+        } else {
+          res.writeHead(202);
+          res.end("");
+        }
+      }
       return;
     }
     // MCP GET
