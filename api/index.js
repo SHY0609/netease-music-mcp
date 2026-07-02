@@ -304,9 +304,15 @@ async function mtApi(path, opts) {
       ...MT_HEADERS,
       cookie: MT_COOKIE,
       "Accept-Language": "zh-CN,zh;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Cache-Control": "no-cache",
       "sec-ch-ua": "\"Chromium\";v=\"9\", \"Not?A_Brand\";v=\"8\"",
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Windows\"",
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      "x-requested-with": "XMLHttpRequest",
     };
     if (!mtgsig) {
       console.error("mtgsig MISSING — aborting request to avoid guaranteed 403");
@@ -318,8 +324,29 @@ async function mtApi(path, opts) {
     // 合并 headers
     const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
     const { headers: _, ...restOpts } = opts;
-    const res = await fetch(signedUrl, { headers: mergedHeaders, ...restOpts });
-    const text = await res.text();
+    let res = await fetch(signedUrl, { headers: mergedHeaders, ...restOpts });
+    let text = await res.text();
+
+    // 418 反爬自动重试（最多2次，间隔递增）
+    if (res.status === 418) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const wait = attempt * 3000 + Math.floor(Math.random() * 2000);
+        console.error("[mtApi] 418 retry " + attempt + "/2, waiting " + wait + "ms...");
+        await new Promise(r => setTimeout(r, wait));
+        // 重新签名（时间戳更新）
+        const retrySig = await mtGetSign(url, bodyStr);
+        if (retrySig.mtgsig) {
+          mergedHeaders["mtgsig"] = retrySig.mtgsig;
+          res = await fetch(retrySig.signedUrl, { headers: mergedHeaders, ...restOpts });
+        } else {
+          res = await fetch(signedUrl, { headers: mergedHeaders, ...restOpts });
+        }
+        text = await res.text();
+        console.error("[mtApi] retry " + attempt + " — status:", res.status);
+        if (res.status !== 418) break;
+      }
+    }
+
     try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
     catch { return { ok: false, status: res.status, raw: text.slice(0, 500) }; }
   } catch (e) { return null; }
