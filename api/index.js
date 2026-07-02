@@ -1248,7 +1248,7 @@ export default async function handler(req, res) {
         // 把第一家店的原始 module data 也显示出来（用于找 tag 线索）
         // 显示完整的搜索 module 数据（tag 可能在里面）
         const firstShopRaw = mtResult._rawModules?.[0] || "";
-        results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "", shopRaw: firstShopRaw.slice(0, 3000) };
+        results.mtSearch = { keyword: mtKeyword, ok: mtResult.source === "real", source: mtResult.source, reason: mtResult.reason || "", hint: mtResult.hint || "", count: mtResult.count, firstShop: mtResult.shops?.[0]?.name || "", price: mtResult.shops?.[0]?.products?.[0]?.price || "", shopRaw: firstShopRaw.slice(0, 3000) };
       } catch (e) { results.mtSearch = { error: e.message }; }
       // Test 7: Meituan addresses
       try {
