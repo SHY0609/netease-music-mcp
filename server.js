@@ -164,19 +164,15 @@ async function mtApi(path, opts) {
   } catch (e) { return null; }
 }
 
-// 用户真实地址缓存（首次调用 mt_addresses 后自动填充）
-let _savedLat = 28731617;  // 28.731617 江西财经大学
-let _savedLng = 115835737; // 115.835737
-
-async function mtSearch(keyword, lat, lng, page = 0) {
-  const wmLat = lat ? Math.round(parseFloat(lat) * 1e6) : _savedLat;
-  const wmLng = lng ? Math.round(parseFloat(lng) * 1e6) : _savedLng;
+async function mtSearch(keyword, lat, lng) {
+  const wmLat = lat ? Math.round(parseFloat(lat) * 1e6) : 28673167;
+  const wmLng = lng ? Math.round(parseFloat(lng) * 1e6) : 115887078;
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
   const now = Date.now();
 
   const bodyParams = {
     optimus_code: "10", optimus_risk_level: "71",
-    keyword: keyword, page_index: String(page),
+    keyword: keyword, page_index: "0",
     wm_order_channel: "default", req_time: String(now),
     search_global_id: "60500084",
     wm_latitude: String(wmLat), wm_longitude: String(wmLng),
@@ -206,20 +202,17 @@ async function mtSearch(keyword, lat, lng, page = 0) {
   for (const m of modules) {
     try {
       const d = JSON.parse(m.string_data || "{}");
-      const shop = {
+      shops.push({
         id: d.poi_id_str || "", name: d.name || "",
         addr: d.address || "", score: d.wm_poi_score || "",
         distance: d.distance || "", deliveryTime: d.delivery_time_tip || "",
         shippingFee: d.shipping_fee_tip || "", minPrice: d.min_price_tip || "",
         monthSales: d.month_sales_tip || "",
-        payUrl: d.scheme || ("meituanwaimai://waimai.meituan.com/menu?restaurant_id=-100&poi_id_str=" + (d.poi_id_str || "")),
         products: (d.product_list || []).slice(0, 3).map(p => ({
           id: String(p.product_spu_id || ""), skuId: String(p.product_sku_id || ""),
           name: p.product_name || "", price: p.price || "",
         })),
-      };
-      console.error("[mtSearch] shop payUrl:", shop.payUrl?.slice(0,60));
-      shops.push(shop);
+      });
     } catch {}
   }
   return { source: "real", keyword, count: shops.length, shops: shops.slice(0, 15) };
@@ -237,12 +230,6 @@ async function mtGetAddresses() {
   });
   if (result?.data?.code === 0) {
     const list = result.data.data?.list || [];
-    // 自动缓存第一个地址作为默认搜索位置
-    if (list.length > 0 && list[0].lat && list[0].lng) {
-      _savedLat = Number(list[0].lat);
-      _savedLng = Number(list[0].lng);
-      console.error("📍 默认地址已更新:", list[0].poi, "lat:", _savedLat, "lng:", _savedLng);
-    }
     return {
       source: "real", count: list.length,
       addresses: list.map(a => ({ id: String(a.addressId), name: a.name, phone: a.phone, address: a.poi })),
@@ -369,8 +356,7 @@ const tools = [
   { name: "current_song", description: "Get current song info and lyrics context.", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "lyrics", description: "Get full lyrics.", inputSchema: { type: "object", properties: { songId: { type: "string" } }, required: [] } },
   // ── 美团 ──
-  { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery). Returns shops with payUrl for payment. Use page parameter for more results.",
-    inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" }, page: { type: "number", default: 0 } }, required: ["keyword"] } },
+  { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery).", inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
   { name: "mt_addresses", description: "Get saved delivery addresses from Meituan.", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "mt_menu", description: "Get full menu for a Meituan shop.", inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
   { name: "mt_order", description: "Preview order on Meituan.", inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, remark: { type: "string" } }, required: ["shopId", "itemId"] } },
@@ -423,9 +409,9 @@ async function execTool(name, args) {
       // ── 美团 ──
       case "mt_search": {
         const keyword = args.keyword || (typeof args === "string" ? args : "汉堡");
-        let result = await mtSearch(keyword, args.lat, args.lng, args.page || 0);
-        if (result.source !== "real") { await new Promise(r => setTimeout(r, 3000)); result = await mtSearch(keyword, args.lat, args.lng, args.page || 0); }
-        if (result.shops) result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, payUrl: s.payUrl, products: s.products }));
+        let result = await mtSearch(keyword, args.lat, args.lng);
+        if (result.source !== "real") { await new Promise(r => setTimeout(r, 3000)); result = await mtSearch(keyword, args.lat, args.lng); }
+        if (result.shops) result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: s.products }));
         return JSON.stringify(result);
       }
       case "mt_addresses": return JSON.stringify(await mtGetAddresses());

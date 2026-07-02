@@ -266,17 +266,29 @@ function mtDiagnose(result, cookiePresent) {
   return null;
 }
 
-async function mtGetSign(url, bodyString) {
+async function mtGetSign(url, bodyString, retry = 0) {
+  const MAX_RETRIES = 3;
   try {
     const fullUrl = url + (url.includes("?") ? "&" : "?") +
       "yodaReady=h5&csecplatform=4&csecversion=4.2.4&_=" + Date.now();
     const sig = await getMtgsig(fullUrl, bodyString || "", MT_COOKIE);
     if (!sig) {
-      console.error("mtgsig EMPTY — signer may not be initialized");
+      console.error("mtgsig EMPTY — signer may not be initialized, retry:", retry);
+      if (retry < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, 1500));
+        return mtGetSign(url, bodyString, retry + 1);
+      }
+      throw new Error("mtgsig EMPTY after " + MAX_RETRIES + " retries");
     }
-    return { mtgsig: sig || "", signedUrl: fullUrl };
+    console.log("mtgsig OK, length:", sig.length);
+    return { mtgsig: sig, signedUrl: fullUrl };
   } catch (e) {
-    console.error("mtgsig error:", e.message);
+    console.error("mtgsig error:", e.message, "retry:", retry);
+    if (retry < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, 1500));
+      return mtGetSign(url, bodyString, retry + 1);
+    }
+    console.error("mtgsig FAILED after " + MAX_RETRIES + " retries — request will 403");
     return { mtgsig: "", signedUrl: url };
   }
 }
@@ -296,12 +308,12 @@ async function mtApi(path, opts) {
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Windows\"",
     };
-    if (mtgsig) {
-      baseHeaders["mtgsig"] = mtgsig;
-      console.log("mtgsig header set, cookieLen:", MT_COOKIE.length);
-    } else {
-      console.error("mtgsig MISSING — request will fail with 403");
+    if (!mtgsig) {
+      console.error("mtgsig MISSING — aborting request to avoid guaranteed 403");
+      return { ok: false, status: 403, data: null, _reason: "mtgsig_empty" };
     }
+    baseHeaders["mtgsig"] = mtgsig;
+    console.log("mtgsig header set, len:", mtgsig.length, "cookieLen:", MT_COOKIE.length);
 
     // 合并 headers
     const mergedHeaders = { ...(opts.headers || {}), ...baseHeaders };
@@ -375,9 +387,7 @@ async function mtSearch(keyword, lat, lng) {
         addr: d.address || "", score: d.wm_poi_score || "",
         distance: d.distance || "", deliveryTime: d.delivery_time_tip || "",
         shippingFee: d.shipping_fee_tip || "", minPrice: d.min_price_tip || "",
-        monthSales: d.month_sales_tip || "",
-        payUrl: d.scheme || ("meituanwaimai://waimai.meituan.com/menu?restaurant_id=-100&poi_id_str=" + (d.poi_id_str || "")),
-        products: products.slice(0, 5)
+        monthSales: d.month_sales_tip || "", products: products.slice(0, 5)
       });
     } catch {}
   }
@@ -512,7 +522,30 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark
 
   const qty = quantity || 1;
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
-  const now = Date.now();
+
+  // ── 自动获取地址详情 ──
+  let addrInfo = { id: "", name: "", phone: "", gender: "", address: "", lat: 0, lng: 0 };
+  if (addressId) {
+    try {
+      const addrs = await mtGetAddresses();
+      if (addrs.source === "real" && addrs.addresses?.length > 0) {
+        const match = addrs.addresses.find(a => a.id === String(addressId));
+        if (match) {
+          addrInfo = {
+            id: match.id,
+            name: match.name || "",
+            phone: match.phone || "",
+            gender: match.gender || "",
+            address: match.address || "",
+            lat: parseFloat(match.lat) / 1e6 || 0,
+            lng: parseFloat(match.lng) / 1e6 || 0,
+          };
+        }
+      }
+    } catch (e) {
+      console.error("[mtPlaceOrder] address fetch failed:", e.message);
+    }
+  }
 
   // 用真实抓包参数格式: /openh5/order/v2/preview
   const orderData = {
@@ -529,14 +562,17 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark
       remark: remark || "",
     }],
     expected_arrival_time: 0,
-    lat: 0, lng: 0,
+    lat: addrInfo.lat || 0, lng: addrInfo.lng || 0,
     orderToken: "",
     nb_app: "wap",
     pay_sdk_version: "1.1.8",
     callback_info: { activity_callback_info: "" },
     accepted_select_coupon: [],
-    addr_longitude: 0, addr_latitude: 0,
-    recipient_name: "", recipient_phone: "", recipient_gender: "", recipient_address: "",
+    addr_longitude: addrInfo.lng || 0, addr_latitude: addrInfo.lat || 0,
+    recipient_name: addrInfo.name,
+    recipient_phone: addrInfo.phone,
+    recipient_gender: addrInfo.gender,
+    recipient_address: addrInfo.address,
     house_number: {},
     addr_id: addressId ? Number(addressId) : 0,
     wx_pay_params: { orderPayChannel: 1 },
@@ -559,20 +595,31 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark
     body: bodyParams,
   });
 
-  const rawStr = JSON.stringify(result?.data || "").slice(0, 600);
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
+    const coupons = (d.couponList || d.coupon_list || d.coupons || []).slice(0, 5).map(function(c) { return {
+      name: c.couponName || c.name || c.title || "",
+      amount: c.discount || c.amount || c.couponAmount || "",
+      condition: c.condition || c.minAmount || "",
+    }});
     return {
       source: "real",
       step: "preview",
       totalPrice: d.totalPrice || d.total_price || d.total || "",
       deliveryFee: d.deliveryFee || d.delivery_fee || d.shipping_fee || "",
-      discount: d.discount || "",
+      discount: d.discount || d.totalDiscount || "",
       foodTotal: d.foodTotal || d.food_total || d.productTotal || "",
+      packingFee: d.packingFee || d.packing_fee || "0",
+      orderToken: d.orderToken || d.order_token || "",
+      address: addrInfo.address || "未提供收货地址",
+      recipient: addrInfo.name || "",
+      recipientPhone: addrInfo.phone || "",
+      coupons: coupons,
       raw: rawStr,
     };
   }
-  return { source: "error", reason: "preview_failed", raw: rawStr, httpStatus: result?.status };
+  return { source: "error", reason: "preview_failed", code: result?.data?.code, msg: result?.data?.msg, raw: rawStr, httpStatus: result?.status };
 }
 
 async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, remark, recipientName, recipientPhone, recipientAddress) {
@@ -581,6 +628,34 @@ async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, remar
 
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
   const qty = quantity || 1;
+
+  // ── 自动获取地址详情（如果调用方没传完整） ──
+  let name = recipientName || "";
+  let phone = recipientPhone || "";
+  let addr = recipientAddress || "";
+  let gender = "";
+  let lat = 0, lng = 0;
+  if (!name || !phone || !addr) {
+    try {
+      const addrs = await mtGetAddresses();
+      if (addrs.source === "real" && addrs.addresses?.length > 0) {
+        const match = addrs.addresses.find(function(a) { return a.id === String(addressId); });
+        if (match) {
+          name = name || match.name || "";
+          phone = phone || match.phone || "";
+          addr = addr || match.address || "";
+          gender = match.gender || "";
+          lat = parseFloat(match.lat) / 1e6 || 0;
+          lng = parseFloat(match.lng) / 1e6 || 0;
+        }
+      }
+    } catch (e) {
+      console.error("[mtOrderSubmit] address fetch failed:", e.message);
+    }
+  }
+
+  // 如果仍然缺关键信息，拒绝提交
+  if (!addr) return { source: "error", reason: "missing_address", hint: "无法获取收货地址，请先调用 mt_addresses 确认地址后再下单" };
 
   const orderData = {
     wm_poi_id: "-100",
@@ -596,17 +671,17 @@ async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, remar
       remark: remark || "",
     }],
     expected_arrival_time: 0,
-    lat: 0, lng: 0,
+    lat: lat, lng: lng,
     orderToken: "",
     nb_app: "wap",
     pay_sdk_version: "1.1.8",
     callback_info: { activity_callback_info: "" },
     accepted_select_coupon: [],
-    addr_longitude: 0, addr_latitude: 0,
-    recipient_name: recipientName || "",
-    recipient_phone: recipientPhone || "",
-    recipient_gender: "",
-    recipient_address: recipientAddress || "",
+    addr_longitude: lng, addr_latitude: lat,
+    recipient_name: name,
+    recipient_phone: phone,
+    recipient_gender: gender,
+    recipient_address: addr,
     house_number: {},
     addr_id: Number(addressId),
     wx_pay_params: { orderPayChannel: 1 },
@@ -629,20 +704,23 @@ async function mtOrderSubmit(shopId, itemId, addressId, quantity, attrIds, remar
     body: bodyParams,
   });
 
-  const rawStr = JSON.stringify(result?.data || "").slice(0, 600);
+  const rawStr = JSON.stringify(result?.data || "").slice(0, 800);
   if (result && result.ok && result.data?.code === 0) {
     const d = result.data.data || {};
     return {
       source: "real",
       step: "submitted",
-      orderId: d.orderId || d.order_id || d.orderIdStr || "",
+      orderId: d.orderId || d.order_id || d.orderIdStr || d.order_id_str || "",
       totalPrice: d.totalPrice || d.total || d.total_price || "",
-      status: d.status || d.orderStatus || "",
-      payUrl: d.payUrl || d.pay_url || "",
+      status: d.status || d.orderStatus || d.order_status || "",
+      payUrl: d.payUrl || d.pay_url || d.payUrlStr || "",
+      deliveryAddress: addr,
+      deliveryName: name,
+      deliveryPhone: phone,
       raw: rawStr,
     };
   }
-  return { source: "error", reason: "submit_failed", raw: rawStr, httpStatus: result?.status };
+  return { source: "error", reason: "submit_failed", code: result?.data?.code, msg: result?.data?.msg, raw: rawStr, httpStatus: result?.status };
 }
 
 async function addToPlaylist(pid, songId) {
@@ -694,7 +772,7 @@ const tools = [
     inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "mt_menu", description: "Get full menu/products for a Meituan shop.",
     inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
-  { name: "mt_order", description: "Order food on Meituan. Tries to submit directly with shop+product+address. Use mt_menu first if available.",
+  { name: "mt_order", description: "Order food on Meituan. Without confirm=true it previews the order (price, delivery, coupons). Set confirm=true to actually place the order. addressId is optional — will auto-select the first saved address if not provided. Use mt_menu first for accurate SKU/attr IDs.",
     inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, remark: { type: "string" }, confirm: { type: "boolean", default: false } }, required: ["shopId", "itemId"] } },
   { name: "current_song", description: "Get current song info, playback position, and lyrics around current position. AI can see what you're hearing right now.",
     inputSchema: { type: "object", properties: {}, required: [] } },
@@ -782,7 +860,7 @@ async function execTool(name, args) {
         }
         // 精简返回：去重+限制大小，避免 MCP 序列化超限
         if (result.shops) {
-          result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, payUrl: s.payUrl, products: (s.products||[]).slice(0,3).map(p => ({ id: p.id, skuId: p.skuId, name: p.name, price: p.price, monthSales: p.monthSales })) }));
+          result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: (s.products||[]).slice(0,3).map(p => ({ id: p.id, skuId: p.skuId, name: p.name, price: p.price, monthSales: p.monthSales })) }));
           delete result._rawModules;
         }
         return JSON.stringify(result);
@@ -798,19 +876,82 @@ async function execTool(name, args) {
       case "mt_order": {
         const confirm = args.confirm || false;
         const remark = args.remark || "";
-        if (confirm && args.addressId) {
-          // 真正提交订单！
-          const order = await mtOrderSubmit(args.shopId, args.itemId, args.addressId,
-            args.quantity || 1, args.attrIds || [], remark, "", "", "");
-          return JSON.stringify(order);
+        let addressId = args.addressId || "";
+
+        // 如果没有传 addressId，尝试自动获取第一个地址
+        let addrHint = "";
+        if (!addressId) {
+          try {
+            const addrs = await mtGetAddresses();
+            if (addrs.source === "real" && addrs.addresses?.length > 0) {
+              addressId = addrs.addresses[0].id;
+              addrHint = "\n📍 已自动选择首个收货地址（ID: " + addressId + "）";
+            } else {
+              addrHint = "\n⚠️ 未找到收货地址，请先调用 mt_addresses 确认";
+            }
+          } catch {
+            addrHint = "\n⚠️ 获取地址失败，请手动提供 addressId";
+          }
         }
-        // 默认：preview 模式
-        const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId || "",
+
+        if (confirm && addressId) {
+          // ── 真正提交订单 ──
+          const order = await mtOrderSubmit(args.shopId, args.itemId, addressId,
+            args.quantity || 1, args.attrIds || [], remark, "", "", "");
+          if (order.source === "real") {
+            return "✅ 下单成功！\n" +
+              "订单号: " + (order.orderId || "处理中") + "\n" +
+              "实付: ¥" + order.totalPrice + "\n" +
+              "送达地址: " + (order.deliveryAddress || "已填写") + "\n" +
+              "收货人: " + (order.deliveryName || "") + " " + (order.deliveryPhone || "") + "\n" +
+              (order.payUrl ? "支付链接: " + order.payUrl + "\n" : "") +
+              "\n📱 请在美团APP中查看订单详情";
+          }
+          // 提交失败——返回详细错误
+          const failReason = order.reason || "提交失败";
+          const failMsg = order.msg || "";
+          const failCode = order.code || "";
+          return "❌ 下单失败\n" +
+            "原因: " + failReason + (failCode ? " (code: " + failCode + ")" : "") +
+            (failMsg ? "\n提示: " + failMsg : "") +
+            "\n\n💡 建议：\n" +
+            "1. 检查商品是否仍在售\n" +
+            "2. 确认收货地址在配送范围内\n" +
+            "3. 使用 mt_menu 获取最新菜单 SKU\n" +
+            JSON.stringify({ _debug: order });
+        }
+
+        // ── 默认: 预览模式 ──
+        const order = await mtPlaceOrder(args.shopId, args.itemId, addressId,
           args.quantity || 1, args.attrIds || [], remark);
         if (order.source === "real") {
-          return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}\n备注: ${remark || "无"}\n\n确认下单请提供收货地址并设置 confirm=true`;
+          const lines = [
+            "💰 订单预览",
+            "商品ID: " + args.itemId + " ×" + (args.quantity || 1),
+            "商品小计: ¥" + (order.foodTotal || "--"),
+            "打包费: ¥" + (order.packingFee || "0"),
+            "配送费: ¥" + (order.deliveryFee || "--"),
+            "优惠: -¥" + (order.discount || "0"),
+            "━━━━━━━━━━━━━",
+            "实付: ¥" + order.totalPrice,
+          ];
+          if (order.address && order.address !== "未提供收货地址") {
+            lines.push("📍 送达: " + order.address);
+            if (order.recipient) lines.push("👤 收货人: " + order.recipient + (order.recipientPhone ? " " + order.recipientPhone : ""));
+          } else {
+            lines.push("⚠️ 未提供收货地址，价格可能不准确");
+          }
+          if (order.coupons && order.coupons.length > 0) {
+            lines.push("🎫 可用优惠券: " + order.coupons.map(function(c) { return c.name + "(-¥" + c.amount + ")"; }).join(", "));
+          }
+          lines.push("备注: " + (remark || "无"));
+          lines.push(addrHint);
+          lines.push("");
+          lines.push("✅ 确认下单请设置 confirm=true");
+          return lines.join("\n");
         }
-        return JSON.stringify(order);
+        // 预览失败
+        return JSON.stringify(order) + addrHint;
       }
       case "current_song": {
         if (!p.current) return "No song playing";
@@ -1128,23 +1269,41 @@ export default async function handler(req, res) {
           };
         }
       } catch (e) { results.mtMenu = { error: e.message }; }
-      // 用菜单 SKU+attrs 下单
+      // 用菜单 SKU+attrs + 真实地址下单
       try {
         if (mtResult.source === "real" && mtResult.shops?.length > 0) {
           const shopId = mtResult.shops[0].id;
           const menu = await mtShopMenu(shopId);
+          // 获取真实地址（用于准确价格计算）
+          let realAddrId = "";
+          let realAddrName = "";
+          try {
+            const addrResult = await mtGetAddresses();
+            if (addrResult.source === "real" && addrResult.addresses?.length > 0) {
+              realAddrId = addrResult.addresses[0].id;
+              realAddrName = addrResult.addresses[0].address?.slice(0, 20) || "";
+            }
+          } catch {}
           if (menu.source === "real" && menu.products?.length > 0) {
             const prod = menu.products.find(p => (p.price || 0) > 0.01) || menu.products[0];
             const skuId = prod.skus?.[0]?.id || prod.id;
             const attrs = prod.attrIds || [];
-            const orderResult = await mtPlaceOrder(shopId, skuId, "1950000002", 1, attrs);
+            const orderResult = await mtPlaceOrder(shopId, skuId, realAddrId, 1, attrs);
             results.mtOrder = {
               orderOk: orderResult.source === "real",
               totalPrice: orderResult.totalPrice || "",
               deliveryFee: orderResult.deliveryFee || "",
+              packingFee: orderResult.packingFee || "",
+              foodTotal: orderResult.foodTotal || "",
+              discount: orderResult.discount || "",
+              address: orderResult.address || realAddrName,
+              recipient: orderResult.recipient || "",
+              coupons: (orderResult.coupons || []).length,
               shopName: mtResult.shops[0].name || "", productName: prod.name || "",
-              skuId: skuId || "", attrs: attrs,
-              orderRaw: orderResult.raw || orderResult.reason || "",
+              skuId: skuId || "", attrs: attrs, addressId: realAddrId,
+              orderRaw: orderResult.raw || "",
+              errorMsg: orderResult.reason || orderResult.msg || "",
+              errorCode: orderResult.code || "",
             };
           } else {
             results.mtOrder = { reason: "menu empty" };
