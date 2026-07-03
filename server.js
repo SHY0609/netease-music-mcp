@@ -430,7 +430,7 @@ const state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics
 
 const ok = (id, r) => ({ jsonrpc: "2.0", id, result: r });
 const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
-const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "home", version: "3.0.0-local" }, capabilities: { tools: {} } };
+const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "netease-music", version: "3.1.0" }, capabilities: { tools: {} } };
 
 const tools = [
   // ── 网易云 ──
