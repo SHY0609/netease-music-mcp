@@ -36,6 +36,16 @@ if (MT_COOKIE) {
     .catch(e => console.error("meituan signer init failed:", e.message));
 }
 
+// ─── SSE 解析（Ombre-Brain streamable-http 返回 SSE 格式）─────────
+function parseSSE(text) {
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith("data: ")) {
+      try { return JSON.parse(line.slice(6)); } catch {}
+    }
+  }
+  return null;
+}
+
 // ─── 初始化 Ombre-Brain 记忆库连接 ──────────────────────────────
 async function initOmbreBrain() {
   try {
@@ -54,7 +64,8 @@ async function initOmbreBrain() {
     });
     if (!initRes.ok) throw new Error(`initialize failed: ${initRes.status}`);
     obSessionId = initRes.headers.get("Mcp-Session-Id") || initRes.headers.get("mcp-session-id") || "";
-    const initData = await initRes.json();
+    const initText = await initRes.text();
+    const initData = parseSSE(initText) || JSON.parse(initText);
     console.log("OB initialize:", initData.result?.serverInfo?.name || "ok", obSessionId ? "(session)" : "");
 
     // Step 2: initialized 通知
@@ -70,7 +81,8 @@ async function initOmbreBrain() {
       headers: { "Content-Type": "application/json", ...(obSessionId ? { "Mcp-Session-Id": obSessionId } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
     });
-    const toolsData = await toolsRes.json();
+    const toolsText = await toolsRes.text();
+    const toolsData = parseSSE(toolsText) || JSON.parse(toolsText);
     obMemoryTools = toolsData.result?.tools || [];
     obReady = true;
     console.log(`OB: ${obMemoryTools.length} memory tools loaded`);
@@ -90,14 +102,16 @@ function isMemoryTool(name) {
 async function forwardToOB(msg) {
   if (!obReady) return null;
   try {
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", "Accept": "application/json" };
     if (obSessionId) headers["Mcp-Session-Id"] = obSessionId;
     const res = await fetch(OB_URL, {
       method: "POST",
       headers,
       body: JSON.stringify(msg)
     });
-    return await res.json();
+    const text = await res.text();
+    // SSE 格式优先，回退纯 JSON
+    return parseSSE(text) || JSON.parse(text);
   } catch (e) {
     console.error("OB forward error:", e.message);
     return null;
