@@ -1343,6 +1343,27 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Gemini Proxy — Vercel can reach Google, forwards to Gemini API
+    if (path.startsWith("/api/gemini-proxy")) {
+      const targetPath = path.replace("/api/gemini-proxy", "") + url.search;
+      const target = "https://generativelanguage.googleapis.com" + targetPath;
+      try {
+        const headers = new Headers(req.headers);
+        headers.set("Host", "generativelanguage.googleapis.com");
+        headers.delete("x-forwarded-host"); headers.delete("x-real-ip");
+        const proxyRes = await fetch(target, {
+          method: req.method,
+          headers: headers,
+          body: req.method !== "GET" && req.method !== "HEAD" ? JSON.stringify(req.body || {}) : undefined
+        });
+        const body = await proxyRes.text();
+        res.statusCode = proxyRes.status;
+        proxyRes.headers.forEach((v, k) => { if (!["content-encoding","transfer-encoding"].includes(k.toLowerCase())) res.setHeader(k, v); });
+        res.end(body);
+      } catch (e) { res.statusCode = 502; res.end(JSON.stringify({ error: "proxy_error", msg: e.message })); }
+      return;
+    }
+
     // Ping — returns git commit to verify which version is actually deployed
     if (path === "/api/test-search") { const kw = url.searchParams.get("kw") || "汉堡"; try { const r = await mtSearch(kw); res.statusCode = 200; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ keyword: kw, ok: r.source === "real", count: r.count, firstShop: r.shops?.[0]?.name })); } catch(e) { res.statusCode = 500; res.end(JSON.stringify({error:e.message})); } return; }
     // Taobao debug test
