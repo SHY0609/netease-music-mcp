@@ -3,4 +3,11 @@ node_modules/
 .vercel
 *.log
 
-.vercel
+# Sensitive files - DO NOT COMMIT
+*cookie*
+*.txt
+deploy.sh
+upload-deploy.mjs
+nginx-fix.conf
+cf-tunnel.service
+test-server.mjs
