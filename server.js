@@ -22,12 +22,86 @@ const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
 const TB_COOKIE = process.env.TAOBAO_COOKIE || "";
 const PORT = process.env.PORT || 3000;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+const OB_URL = "http://127.0.0.1:18001/mcp";  // Ombre-Brain 记忆库
+
+// ─── Ombre-Brain 记忆库状态 ────────────────────────────────────
+let obSessionId = null;
+let obReady = false;
+let obMemoryTools = [];
 
 // ─── 预初始化美团签名器 ────────────────────────────────────────
 if (MT_COOKIE) {
   console.log("pre-init meituan signer, cookieLen:", MT_COOKIE.length);
   initSigner(MT_COOKIE).then(() => console.log("meituan signer ready"))
     .catch(e => console.error("meituan signer init failed:", e.message));
+}
+
+// ─── 初始化 Ombre-Brain 记忆库连接 ──────────────────────────────
+async function initOmbreBrain() {
+  try {
+    // Step 1: MCP initialize 握手
+    const initRes = await fetch(OB_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 0, method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "netease-music-mcp", version: "3.0.0" }
+        }
+      })
+    });
+    if (!initRes.ok) throw new Error(`initialize failed: ${initRes.status}`);
+    obSessionId = initRes.headers.get("Mcp-Session-Id") || initRes.headers.get("mcp-session-id") || "";
+    const initData = await initRes.json();
+    console.log("OB initialize:", initData.result?.serverInfo?.name || "ok", obSessionId ? "(session)" : "");
+
+    // Step 2: initialized 通知
+    await fetch(OB_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(obSessionId ? { "Mcp-Session-Id": obSessionId } : {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
+    });
+
+    // Step 3: 获取记忆工具列表
+    const toolsRes = await fetch(OB_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(obSessionId ? { "Mcp-Session-Id": obSessionId } : {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+    });
+    const toolsData = await toolsRes.json();
+    obMemoryTools = toolsData.result?.tools || [];
+    obReady = true;
+    console.log(`OB: ${obMemoryTools.length} memory tools loaded`);
+  } catch (e) {
+    console.error("OB init failed:", e.message);
+    console.error("Memory tools will NOT be available. Start Ombre-Brain first.");
+    obReady = false;
+    obMemoryTools = [];
+  }
+}
+
+// ─── 转发记忆工具调用到 Ombre-Brain ──────────────────────────────
+function isMemoryTool(name) {
+  return obMemoryTools.some(t => t.name === name);
+}
+
+async function forwardToOB(msg) {
+  if (!obReady) return null;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (obSessionId) headers["Mcp-Session-Id"] = obSessionId;
+    const res = await fetch(OB_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(msg)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error("OB forward error:", e.message);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -443,8 +517,17 @@ async function handleMcpMessage(msg) {
   try {
     if (method === "initialize") return ok(id, mcpInfo);
     if (method === "notifications/initialized") return null;
-    if (method === "tools/list") return ok(id, { tools });
-    if (method === "tools/call") return txt(id, await execTool(params.name, params.arguments || {}));
+    if (method === "tools/list") return ok(id, { tools: [...tools, ...obMemoryTools] });
+    if (method === "tools/call") {
+      const toolName = params.name;
+      // 记忆类工具 → 转发到 Ombre-Brain
+      if (isMemoryTool(toolName)) {
+        const result = await forwardToOB(msg);
+        if (result) return result;
+        return txt(id, "⚠️ 记忆库未连接，请检查 Ombre-Brain 是否运行");
+      }
+      return txt(id, await execTool(toolName, params.arguments || {}));
+    }
     if (method === "ping") return ok(id, {});
     return txt(id, `Unknown: ${method}`);
   } catch (e) { return txt(id, `❌ ${e.message}`); }
@@ -563,11 +646,19 @@ function readBody(req) {
   });
 }
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`✅ netease-music-mcp v3.0 running on port ${PORT}`);
   console.log("   🎵 Netease:", COOKIE ? "OK (" + COOKIE.length + " chars)" : "NOT SET");
   console.log("   🍔 Meituan:", MT_COOKIE ? "OK (" + MT_COOKIE.length + " chars)" : "NOT SET");
   console.log("   🛒 Taobao:", TB_COOKIE ? "OK (" + TB_COOKIE.length + " chars)" : "NOT SET");
+  console.log("   🧠 Memory:", "connecting to Ombre-Brain...");
   console.log("   MCP endpoint: http://localhost:" + PORT + "/api/mcp");
   console.log("   Player: http://localhost:" + PORT);
+  // 异步连接 Ombre-Brain，不阻塞服务启动
+  await initOmbreBrain();
+  if (obReady) {
+    console.log("   🧠 Memory: " + obMemoryTools.length + " tools ready (breath/hold/grow/...)");
+  } else {
+    console.log("   🧠 Memory: NOT CONNECTED — start Ombre-Brain on port 18001");
+  }
 });
