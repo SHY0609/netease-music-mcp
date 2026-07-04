@@ -110,8 +110,19 @@ async function forwardToOB(msg) {
       body: JSON.stringify(msg)
     });
     const text = await res.text();
-    // SSE 格式优先，回退纯 JSON
-    return parseSSE(text) || JSON.parse(text);
+    const result = parseSSE(text) || JSON.parse(text);
+    // 会话过期 → 重新握手后重试一次
+    if (result && result.error && /session/i.test(result.error.message || "")) {
+      console.log("OB session expired, re-initializing...");
+      await initOmbreBrain();
+      if (obReady && obSessionId) {
+        const headers2 = { "Content-Type": "application/json", "Accept": "application/json", "Mcp-Session-Id": obSessionId };
+        const res2 = await fetch(OB_URL, { method: "POST", headers: headers2, body: JSON.stringify(msg) });
+        const text2 = await res2.text();
+        return parseSSE(text2) || JSON.parse(text2);
+      }
+    }
+    return result;
   } catch (e) {
     console.error("OB forward error:", e.message);
     return null;
@@ -430,7 +441,7 @@ const state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics
 
 const ok = (id, r) => ({ jsonrpc: "2.0", id, result: r });
 const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
-const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "netease-music", version: "3.1.0" }, capabilities: { tools: {} } };
+const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "Yuuke", version: "3.1.0" }, capabilities: { tools: {} } };
 
 const tools = [
   // ── 网易云 ──
