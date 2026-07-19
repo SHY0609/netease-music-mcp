@@ -1,21 +1,36 @@
 /**
- * server.js — 全功能 MCP Server（本地运行 / Koyeb 部署）
+ * server.js — 全功能 MCP Server（本地运行 / 腾讯云部署）
  *
  * 🎵 网易云音乐（weapi — VIP歌曲全通）
- * 🍔 美团外卖（搜索/地址/菜单/下单）
+ * 🍔 美团外卖（搜索/地址/菜单/下单 — CDP 浏览器自动化）
  * 🛒 淘宝（搜索商品/详情/发链接）
+ * 🎵 抖音（搜索/热搜/视频详情/用户主页 — CDP + SSR JSON，10G冲浪优化）
+ * 🧠 长期记忆（Ombre-Brain 转发）
+ * 🌿 Galatea 代理（工具转发）
+ * 📱 屏幕时间（iPhone Shortcuts → 服务器 → Claude 查询）
  *
  * 用法: node server.js
  * 端口: process.env.PORT || 3000
+ * 环境变量: NETEASE_COOKIE, MEITUAN_COOKIE, TAOBAO_COOKIE,
+ *           GALATEA_TOKEN, TAOBAO_APP_KEY, TAOBAO_APP_SECRET, TAOBAO_ADZONE_ID
  */
 import http from "node:http";
 import { deflateSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { weapi } from "./lib/netease.js";
 import { tbSearch, tbDetail } from "./lib/taobao.js";
+import { toggle as screentimeToggle, getReport as screentimeReport, getSummary as screentimeSummary } from "./lib/screentime.js";
+// 淘宝开放平台（官方 API，不会被风控）
+let openSearch = null;
+try { const mod = await import("./lib/taobao-open.js"); openSearch = mod.openSearch; console.log("   🛒 Taobao Open API: available"); } catch { console.log("   🛒 Taobao Open API: not loaded"); }
+// 浏览器模式（备选）
+let tbBrowserSearch = null;
+try { const mod = await import("./lib/taobao-browser.js"); tbBrowserSearch = mod.browserSearch; console.log("   🛒 Taobao browser mode: available"); } catch { console.log("   🛒 Taobao browser mode: puppeteer not installed"); }
 
 const require = createRequire(import.meta.url);
 const { getMtgsig, init: initSigner } = require("./lib/mt-signer-v2.cjs");
+const cdp = require("./lib/cdp-meituan.cjs");
+const dy = require("./lib/cdp-douyin.cjs");  // 抖音 CDP
 
 const COOKIE = process.env.NETEASE_COOKIE || "";
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
@@ -23,11 +38,18 @@ const TB_COOKIE = process.env.TAOBAO_COOKIE || "";
 const PORT = process.env.PORT || 3000;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const OB_URL = "http://127.0.0.1:18001/mcp";  // Ombre-Brain 记忆库
+const GALATEA_URL = "https://galatea.abysslumina.com/mcp";
+const GALATEA_TOKEN = process.env.GALATEA_TOKEN || "gg_nj2lRj6A84VrPvycdireDyGAaT7RduOUBHYEXuN-uGM";
 
 // ─── Ombre-Brain 记忆库状态 ────────────────────────────────────
 let obSessionId = null;
 let obReady = false;
 let obMemoryTools = [];
+
+// ─── Galatea 代理状态 ──────────────────────────────────────────
+let galateaSessionId = null;
+let galateaReady = false;
+let galateaTools = [];
 
 // ─── 预初始化美团签名器 ────────────────────────────────────────
 if (MT_COOKIE) {
@@ -35,6 +57,10 @@ if (MT_COOKIE) {
   initSigner(MT_COOKIE).then(() => console.log("meituan signer ready"))
     .catch(e => console.error("meituan signer init failed:", e.message));
 }
+
+// ─── 启动 CDP 浏览器（美团 + 抖音共享 9222 端口）──────
+cdp.startBrowser().then(() => console.log("   🖥️ CDP browser: OK")).catch(e => console.error("   🖥️ CDP browser:", e.message));
+dy.startBrowser().then(() => console.log("   🎵 Douyin CDP: OK")).catch(e => console.error("   🎵 Douyin CDP:", e.message));
 
 // ─── SSE 解析（Ombre-Brain streamable-http 返回 SSE 格式）─────────
 function parseSSE(text) {
@@ -125,6 +151,117 @@ async function forwardToOB(msg) {
     return result;
   } catch (e) {
     console.error("OB forward error:", e.message);
+    return null;
+  }
+}
+
+// ─── 初始化 Galatea 代理连接 ──────────────────────────────────
+async function initGalatea() {
+  if (!GALATEA_TOKEN) {
+    console.log("Galatea: GALATEA_TOKEN not set — skipping");
+    galateaReady = false;
+    galateaTools = [];
+    return;
+  }
+  try {
+    // Step 1: MCP initialize 握手
+    const initRes = await fetch(GALATEA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": "Bearer " + GALATEA_TOKEN,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 0, method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "netease-music-mcp", version: "3.4.0" }
+        }
+      })
+    });
+    if (!initRes.ok) throw new Error(`initialize failed: ${initRes.status}`);
+    galateaSessionId = initRes.headers.get("Mcp-Session-Id") || initRes.headers.get("mcp-session-id") || "";
+    const initText = await initRes.text();
+    const initData = parseSSE(initText) || JSON.parse(initText);
+    console.log("Galatea initialize:", initData.result?.serverInfo?.name || "ok", galateaSessionId ? "(session)" : "");
+
+    // Step 2: initialized 通知
+    await fetch(GALATEA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(galateaSessionId ? { "Mcp-Session-Id": galateaSessionId } : {}),
+        "Authorization": "Bearer " + GALATEA_TOKEN,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
+    });
+
+    // Step 3: 获取工具列表
+    const toolsRes = await fetch(GALATEA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(galateaSessionId ? { "Mcp-Session-Id": galateaSessionId } : {}),
+        "Authorization": "Bearer " + GALATEA_TOKEN,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+    });
+    const toolsText = await toolsRes.text();
+    const toolsData = parseSSE(toolsText) || JSON.parse(toolsText);
+    galateaTools = toolsData.result?.tools || [];
+    galateaReady = true;
+    console.log(`Galatea: ${galateaTools.length} tools loaded`);
+  } catch (e) {
+    console.error("Galatea init failed:", e.message);
+    console.error("Galatea tools will NOT be available.");
+    galateaReady = false;
+    galateaTools = [];
+  }
+}
+
+// ─── 判断是否为 Galatea 工具 ──────────────────────────────────
+function isGalateaTool(name) {
+  return galateaTools.some(t => t.name === name);
+}
+
+// ─── 转发工具调用到 Galatea ────────────────────────────────────
+async function forwardToGalatea(msg) {
+  if (!galateaReady) return null;
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Authorization": "Bearer " + GALATEA_TOKEN,
+    };
+    if (galateaSessionId) headers["Mcp-Session-Id"] = galateaSessionId;
+    const res = await fetch(GALATEA_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(msg)
+    });
+    const text = await res.text();
+    const result = parseSSE(text) || JSON.parse(text);
+    // 会话过期 → 重新握手后重试一次
+    if (result && result.error && /session/i.test(result.error.message || "")) {
+      console.log("Galatea session expired, re-initializing...");
+      await initGalatea();
+      if (galateaReady && galateaSessionId) {
+        const headers2 = {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Authorization": "Bearer " + GALATEA_TOKEN,
+          "Mcp-Session-Id": galateaSessionId,
+        };
+        const res2 = await fetch(GALATEA_URL, { method: "POST", headers: headers2, body: JSON.stringify(msg) });
+        const text2 = await res2.text();
+        return parseSSE(text2) || JSON.parse(text2);
+      }
+    }
+    return result;
+  } catch (e) {
+    console.error("Galatea forward error:", e.message);
     return null;
   }
 }
@@ -392,13 +529,14 @@ async function mtShopMenu(shopId) {
   return { source: "error", reason: "menu_failed" };
 }
 
-async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark) {
+async function mtPlaceOrder(shopId, itemId, skuId, addressId, quantity, attrIds, remark) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
   const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
+  const spuId = Number(itemId); const skuIdNum = Number(skuId || itemId);
 
   const orderData = {
     wm_poi_id: "-100", poi_id_str: shopId, wm_order_pay_type: 2, cart_id: "",
-    foodlist: [{ skuId: Number(itemId), id: Number(itemId), count: quantity || 1, attr_ids: attrIds || [], activityTag: "", remark: remark || "" }],
+    foodlist: [{ skuId: skuIdNum, id: spuId, count: quantity || 1, attr_ids: attrIds || [], activityTag: "", remark: remark || "" }],
     expected_arrival_time: 0, lat: 0, lng: 0, orderToken: "", nb_app: "wap", pay_sdk_version: "1.1.8",
     callback_info: { activity_callback_info: "" }, accepted_select_coupon: [],
     addr_longitude: 0, addr_latitude: 0,
@@ -410,23 +548,48 @@ async function mtPlaceOrder(shopId, itemId, addressId, quantity, attrIds, remark
     wm_open_id: "",
   };
 
+  const bodyParams = (data) => new URLSearchParams({
+    data: JSON.stringify(data),
+    wm_latitude: "28673167", wm_longitude: "115887078",
+    wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
+    wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
+    openh5_uuid: uuid, uuid,
+  }).toString();
+
+  console.error("[mt_order] sending preview, shopId:", shopId, "itemId:", itemId, "skuId:", skuIdNum, "foodlist:", JSON.stringify(orderData.foodlist));
+
   const result = await mtApi("/openh5/order/v2/preview", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      data: JSON.stringify(orderData),
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      wm_actual_latitude: "28673167", wm_actual_longitude: "115887078",
-      wmUuidDeregistration: "0", wmUserIdDeregistration: "0",
-      openh5_uuid: uuid, uuid,
-    }).toString(),
+    body: bodyParams(orderData),
   });
 
-  if (result?.data?.code === 0) {
-    const d = result.data.data || {};
-    return { source: "real", step: "preview", totalPrice: d.totalPrice || d.total || "", deliveryFee: d.deliveryFee || d.shipping_fee || "" };
+  console.error("[mt_order] preview raw:", JSON.stringify({ ok: result?.ok, status: result?.status, code: result?.data?.code, msg: result?.data?.msg, dataKeys: result?.data?.data ? Object.keys(result.data.data) : "no-data" }).slice(0, 300));
+
+  if (result?.data?.code !== 0) {
+    console.error("[mt_order] preview failed:", JSON.stringify(result?.data || result).slice(0, 500));
+    return { source: "error", reason: "preview_failed", code: result?.data?.code, msg: result?.data?.msg || "" };
   }
-  return { source: "error", reason: "preview_failed" };
+
+  const preview = result.data.data || {};
+  const total = preview.totalPrice || preview.total || "";
+  const fee = preview.deliveryFee || preview.shipping_fee || "";
+
+  // 提交订单
+  console.error("[mt_order] creating...");
+  orderData.orderToken = preview.orderToken || preview.order_token || "";
+  const createRes = await mtApi("/openh5/order/v2/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: bodyParams(orderData),
+  });
+
+  if (createRes?.data?.code === 0) {
+    const d = createRes.data.data || {};
+    return { source: "real", step: "created", orderId: d.orderId || d.order_id || "", totalPrice: d.totalPrice || d.total || total, deliveryFee: d.deliveryFee || d.shipping_fee || fee, payUrl: d.payUrl || d.pay_url || "" };
+  }
+
+  return { source: "real", step: "preview", totalPrice: total, deliveryFee: fee, hint: "create failed: " + (createRes?.data?.code || "") + " " + (createRes?.data?.msg || "") };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -441,7 +604,7 @@ const state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics
 
 const ok = (id, r) => ({ jsonrpc: "2.0", id, result: r });
 const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
-const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "Yuuke", version: "3.1.0" }, capabilities: { tools: {} } };
+const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "Yuuke", version: "3.9.0" }, capabilities: { tools: {} } };
 
 const tools = [
   // ── 网易云 ──
@@ -458,10 +621,25 @@ const tools = [
   { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery).", inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
   { name: "mt_addresses", description: "Get saved delivery addresses from Meituan.", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "mt_menu", description: "Get full menu for a Meituan shop.", inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
-  { name: "mt_order", description: "Preview order on Meituan.", inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, remark: { type: "string" } }, required: ["shopId", "itemId"] } },
+  { name: "mt_order", description: "Order food via browser automation. Pass shopId + itemName (product name from menu). For example: itemName='桃桃茉莉冰茶'. After preview, reply '确认下单' to confirm.", inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string", description: "Product ID (legacy)" }, itemName: { type: "string", description: "Product name to find and click on the page (e.g. '桃桃茉莉冰茶')" }, skuId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, remark: { type: "string" } }, required: ["shopId"] } },
+  // ── 抖音（CDP 浏览器自动化 — 10G 冲浪优化）──
+  { name: "dy_search", description: "在抖音首页推荐流中搜索视频。按关键词过滤标题和作者，返回匹配的视频列表（含作者、标题、点赞）。", inputSchema: { type: "object", properties: { keyword: { type: "string", description: "搜索关键词" } }, required: ["keyword"] } },
+  { name: "dy_trending", description: "抖音热搜榜 — 当前最火的话题和视频。", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "dy_video", description: "获取抖音视频详情 — 标题、点赞、评论、分享数、发布时间。", inputSchema: { type: "object", properties: { videoId: { type: "string", description: "视频 ID 或完整 URL（自动提取 ID）" } }, required: ["videoId"] } },
+  { name: "dy_user", description: "抖音用户主页 — 昵称、简介、粉丝数、获赞数、作品数。", inputSchema: { type: "object", properties: { userId: { type: "string", description: "用户 ID（sec_uid 或 uid）" } }, required: ["userId"] } },
+  { name: "dy_cookie", description: "设置抖音 Cookie（从浏览器复制）。对标美团: 电脑浏览器登录 douyin.com → F12 → Application → Cookies → 全选复制 → 贴到这里。", inputSchema: { type: "object", properties: { cookie: { type: "string", description: "从浏览器复制的完整 Cookie 字符串" } }, required: ["cookie"] } },
+  { name: "dy_login", description: "（已废弃）请改用 dy_cookie 手动导入 Cookie。电脑浏览器登录 douyin.com，F12 复制 Cookie 后使用 dy_cookie。", inputSchema: { type: "object", properties: { account: { type: "string" } }, required: [] } },
+  { name: "dy_switch", description: "切换当前活跃的抖音账号。切换后所有 dy_* 操作都用该账号。", inputSchema: { type: "object", properties: { account: { type: "string", description: "账号名，如 '小号'/'大号'" } }, required: ["account"] } },
+  { name: "dy_notifications", description: "查看抖音通知 — 谁评论了你、点赞了你、关注了你。需先登录。", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "dy_messages", description: "查看抖音私信/消息列表 — 谁给你发了私信，最后一条是什么。需先登录。", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "dy_comment", description: "在抖音视频下发评论或回复他人评论。replyTo 填要回复的评论内容关键词可以发子评论。", inputSchema: { type: "object", properties: { videoId: { type: "string", description: "视频 ID 或完整 URL" }, text: { type: "string", description: "评论内容" }, replyTo: { type: "string", description: "可选，要回复的评论内容关键词（匹配到就发子评论）" } }, required: ["videoId", "text"] } },
   // ── 淘宝 ──
-  { name: "tb_search", description: "Search products on Taobao. Returns name, price, sales, shop, and purchase link.", inputSchema: { type: "object", properties: { keyword: { type: "string" }, minPrice: { type: "string" }, maxPrice: { type: "string" }, sort: { type: "string" } }, required: ["keyword"] } },
-  { name: "tb_detail", description: "Get product detail on Taobao.", inputSchema: { type: "object", properties: { itemId: { type: "string" } }, required: ["itemId"] } },
+  { name: "tb_search", description: "Search products on Taobao. Returns name, price, sales, shop, and purchase link.", inputSchema: { type: "object", properties: { keyword: { type: "string", description: "Search keyword" }, minPrice: { type: "string", description: "Minimum price filter (client-side)" }, maxPrice: { type: "string", description: "Maximum price filter (client-side)" }, sort: { type: "string", description: "Sort: _coefp (relevance, default), _sale (sales), _price (price low→high), _priceD (price high→low)" }, page: { type: "number", default: 1, description: "Page number" }, pageSize: { type: "number", default: 20, description: "Results per page" } }, required: ["keyword"] } },
+  { name: "tb_detail", description: "Get product detail on Taobao — price, original price, sales, stock, shop info, coupons, images.", inputSchema: { type: "object", properties: { itemId: { type: "string", description: "Taobao item ID (from search results)" } }, required: ["itemId"] } },
+  { name: "tb_link", description: "Generate shareable purchase links (H5 + PC) from a Taobao item ID.", inputSchema: { type: "object", properties: { itemId: { type: "string", description: "Taobao item ID" } }, required: ["itemId"] } },
+  // ── 屏幕时间 ──
+  { name: "screentime_report", description: "Get today's screen-time report — all tracked apps with usage time and session count. Like iPhone Screen Time but readable by Claude.", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "screentime_app", description: "Query screen-time for a specific app today.", inputSchema: { type: "object", properties: { app: { type: "string", description: "App name, e.g. 小红书 / 微信 / Claude" } }, required: ["app"] } },
 ];
 
 async function execTool(name, args) {
@@ -505,30 +683,184 @@ async function execTool(name, args) {
         if (!id) return "No song specified";
         return (await getLyricsRaw(id)) || "(no lyrics)";
       }
-      // ── 美团 ──
+      // ── 美团（CDP 浏览器优先，API 签名兜底）──
       case "mt_search": {
         const keyword = args.keyword || (typeof args === "string" ? args : "汉堡");
+        try {
+          console.error("[mt_search] calling cdp.mtSearch...");
+          const cdpResult = await cdp.mtSearch(keyword);
+          console.error("[mt_search] CDP done, source:", cdpResult.source, "textLen:", (cdpResult.rawText||"").length);
+          if (cdpResult.source === "real") return JSON.stringify(cdpResult);
+        } catch (e) { console.error("[mt_search] CDP threw:", e.message); }
+        // fallback: API
         let result = await mtSearch(keyword, args.lat, args.lng);
         if (result.source !== "real") { await new Promise(r => setTimeout(r, 3000)); result = await mtSearch(keyword, args.lat, args.lng); }
         if (result.shops) result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: s.products }));
         return JSON.stringify(result);
       }
-      case "mt_addresses": return JSON.stringify(await mtGetAddresses());
-      case "mt_menu": return JSON.stringify(await mtShopMenu(args.shopId));
+      case "mt_menu": {
+        // CDP: 搜店名点进去拿菜单
+        const shopName = args.shopName || args.shopId || "";
+        try {
+          const cdpResult = await cdp.mtMenu(shopName);
+          if (cdpResult.source === "real") return JSON.stringify(cdpResult);
+        } catch (e) { console.error("[mt_menu] CDP failed:", e.message); }
+        // fallback: API
+        if (args.shopId) return JSON.stringify(await mtShopMenu(args.shopId));
+        return JSON.stringify({ source: "error", reason: "need shopName or shopId" });
+      }
       case "mt_order": {
-        const order = await mtPlaceOrder(args.shopId, args.itemId, args.addressId, args.quantity || 1, args.attrIds || [], args.remark || "");
+        // CDP 完整下单链路
+        const shop = args.shopName || args.shop || "";
+        const product = args.productName || args.itemName || args.product || "";
+        const addr = args.addressName || args.address || "黎先菜店";
+        if (!shop || !product) return JSON.stringify({ source: "error", reason: "need shopName and productName" });
+        try {
+          const order = await cdp.mtOrder(shop, product, addr, args.quantity || 1);
+          return JSON.stringify(order);
+        } catch (e) { console.error("[mt_order] CDP failed:", e.message); }
+        // fallback: API (大概率 code 3)
+        const order = await mtPlaceOrder(args.shopId, args.itemId, args.skuId, args.addressId, args.quantity || 1, args.attrIds || [], args.remark || "");
         if (order.source === "real") return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}`;
         return JSON.stringify(order);
       }
+      // ── 抖音（CDP 浏览器，SSR JSON 优先）──
+      case "dy_search": {
+        console.error("[dy_search] keyword:", args.keyword);
+        try {
+          const result = await dy.dySearch(args.keyword);
+          console.error("[dy_search] source:", result.source, "count:", result.videos?.length||result.raw?.length||0);
+          return JSON.stringify(result);
+        } catch (e) { return JSON.stringify({ source: "error", reason: e.message }); }
+      }
+      case "dy_trending": {
+        try {
+          const result = await dy.dyTrending();
+          console.error("[dy_trending] source:", result.source, "count:", result.items?.length||result.raw?.length||0);
+          return JSON.stringify(result);
+        } catch (e) { return JSON.stringify({ source: "error", reason: e.message }); }
+      }
+      case "dy_video": {
+        let vid = String(args.videoId || "").trim();
+        if (vid.startsWith("http")) { const m = vid.match(/video\/(\d+)/); vid = m ? m[1] : vid; }
+        if (!vid) return JSON.stringify({ source: "error", reason: "missing videoId" });
+        try {
+          const result = await dy.dyVideo(vid);
+          console.error("[dy_video] source:", result.source);
+          return JSON.stringify(result);
+        } catch (e) { return JSON.stringify({ source: "error", reason: e.message }); }
+      }
+      case "dy_user": {
+        const uid = String(args.userId || "").trim();
+        if (!uid) return JSON.stringify({ source: "error", reason: "missing userId" });
+        try {
+          const result = await dy.dyUser(uid);
+          console.error("[dy_user] source:", result.source);
+          return JSON.stringify(result);
+        } catch (e) { return JSON.stringify({ source: "error", reason: e.message }); }
+      }
+      case "dy_comment": {
+        let vid = String(args.videoId || "").trim();
+        if (vid.startsWith("http")) { const m = vid.match(/video\/(\d+)/); vid = m ? m[1] : vid; }
+        if (!vid) return JSON.stringify({ source: "error", reason: "missing videoId" });
+        const commentText = String(args.text || "").trim();
+        if (!commentText) return JSON.stringify({ source: "error", reason: "empty comment" });
+        try {
+          const result = await dy.dyComment(vid, commentText, args.replyTo);
+          console.error("[dy_comment] ok:", result.ok, "status:", result.status);
+          return JSON.stringify(result);
+        } catch (e) { return JSON.stringify({ source: "error", reason: e.message }); }
+      }
       // ── 淘宝 ──
       case "tb_search": {
-        if (!TB_COOKIE) return JSON.stringify({ source: "error", reason: "no_cookie", hint: "请设置 TAOBAO_COOKIE 环境变量" });
-        const r = await tbSearch(args.keyword, { pageSize: 20, sort: args.sort, minPrice: args.minPrice, maxPrice: args.maxPrice }, TB_COOKIE);
-        return JSON.stringify(r);
+        if (!TB_COOKIE && !openSearch) return JSON.stringify({ source: "error", reason: "no_cookie", hint: "请设置 TAOBAO_APP_KEY 和 TAOBAO_APP_SECRET" });
+        console.error("[tb_search] keyword:", args.keyword);
+        let result;
+
+        // 第1优先: 淘宝开放平台（官方 API，不风控）
+        if (openSearch) {
+          result = await openSearch(args.keyword, {
+            pageSize: args.pageSize || 10,
+            sort: args.sort || "",
+            page: args.page || 1,
+            isTmall: args.isTmall,
+            hasCoupon: args.hasCoupon,
+          });
+        }
+
+        // 第2优先: 浏览器模式
+        if ((!result || result.source !== "real") && tbBrowserSearch && TB_COOKIE) {
+          if (result) console.error("[tb_search] open api failed:", result.reason, "→ fallback to browser");
+          result = await tbBrowserSearch(args.keyword, {
+            pageSize: args.pageSize || 10,
+            sort: args.sort || "_coefp",
+            minPrice: args.minPrice,
+            maxPrice: args.maxPrice,
+            page: args.page || 1,
+          }, TB_COOKIE);
+        }
+
+        // 第3优先: 直接 mtop API
+        if (!result || result.source !== "real") {
+          if (result) console.error("[tb_search] browser failed:", result.reason, "→ fallback to direct API");
+          if (!TB_COOKIE) return JSON.stringify(result || { source: "error", reason: "all_failed" });
+          result = await tbSearch(args.keyword, {
+            pageSize: args.pageSize || 20,
+            sort: args.sort || "_coefp",
+            minPrice: args.minPrice,
+            maxPrice: args.maxPrice,
+            page: args.page || 1,
+          }, TB_COOKIE);
+          if (result.source !== "real") {
+            await new Promise(r => setTimeout(r, 3000));
+            result = await tbSearch(args.keyword, {
+              pageSize: args.pageSize || 20,
+              sort: args.sort || "_coefp",
+              minPrice: args.minPrice,
+              maxPrice: args.maxPrice,
+              page: args.page || 1,
+            }, TB_COOKIE);
+          }
+        }
+
+        if (result.products) {
+          result.products = result.products.slice(0, 15).map(p => ({
+            id: p.id, title: (p.title || "").slice(0, 60),
+            price: p.price, sold: p.sold,
+            shopName: (p.shopName || "").slice(0, 20),
+            image: p.image, url: p.url,
+            coupon: p.coupon || "",  // 开放平台有优惠券信息
+          }));
+        }
+        console.error("[tb_search] result — source:", result.source, "count:", result.products?.length);
+        return JSON.stringify(result);
       }
       case "tb_detail": {
         if (!TB_COOKIE) return JSON.stringify({ source: "error", reason: "no_cookie" });
-        return JSON.stringify(await tbDetail(args.itemId, TB_COOKIE));
+        console.error("[tb_detail] itemId:", args.itemId);
+        let detail = await tbDetail(args.itemId, TB_COOKIE);
+        if (detail.source !== "real") {
+          await new Promise(r => setTimeout(r, 3000));
+          detail = await tbDetail(args.itemId, TB_COOKIE);
+        }
+        console.error("[tb_detail] result — source:", detail.source);
+        return JSON.stringify(detail);
+      }
+      case "tb_link": {
+        const id = String(args.itemId || "").trim();
+        if (!id) return JSON.stringify({ source: "error", reason: "missing_itemId" });
+        return JSON.stringify({
+          source: "real",
+          itemId: id,
+          h5Link: "https://h5.m.taobao.com/awp/core/detail.htm?id=" + id,
+          pcLink: "https://item.taobao.com/item.htm?id=" + id,
+        });
+      }
+      // ── 屏幕时间 ──
+      case "screentime_report": return screentimeSummary();
+      case "screentime_app": {
+        const app = screentimeReport().apps.find(a => a.app === args.app);
+        return app ? `${app.app}: ${app.totalMinutes}分钟, ${app.sessionCount}次` : `今天还没用过 ${args.app}`;
       }
       default: return "Unknown tool";
     }
@@ -542,14 +874,34 @@ async function handleMcpMessage(msg) {
   try {
     if (method === "initialize") return ok(id, mcpInfo);
     if (method === "notifications/initialized") return null;
-    if (method === "tools/list") return ok(id, { tools: [...tools, ...obMemoryTools] });
+    if (method === "tools/list") return ok(id, { tools: [...tools, ...obMemoryTools, ...galateaTools] });
     if (method === "tools/call") {
       const toolName = params.name;
+      // 抖音 Cookie 注入
+      if (toolName === "dy_cookie") {
+        const result = dy.dyCookie(params.arguments?.cookie || "");
+        return txt(id, JSON.stringify(result));
+      }
+      // 抖音登录（已废弃，提示用 dy_cookie）
+      if (toolName === "dy_login") {
+        return txt(id, JSON.stringify({ ok: false, hint: "请用 dy_cookie 代替。电脑浏览器打开 douyin.com 登录后，F12 → Application → Cookies → 全选复制，然后说'设置抖音Cookie: [粘贴]'。" }));
+      }
+      // 抖音切换账号
+      if (toolName === "dy_switch") {
+        const result = dy.dySwitch(params.arguments?.account || "default");
+        return txt(id, JSON.stringify(result));
+      }
       // 记忆类工具 → 转发到 Ombre-Brain
       if (isMemoryTool(toolName)) {
         const result = await forwardToOB(msg);
         if (result) return result;
         return txt(id, "⚠️ 记忆库未连接，请检查 Ombre-Brain 是否运行");
+      }
+      // Galatea 工具 → 转发到 Galatea
+      if (isGalateaTool(toolName)) {
+        const result = await forwardToGalatea(msg);
+        if (result) return result;
+        return txt(id, "⚠️ Galatea 未连接，请检查 GALATEA_TOKEN 是否正确");
       }
       return txt(id, await execTool(toolName, params.arguments || {}));
     }
@@ -563,7 +915,7 @@ async function handleMcpMessage(msg) {
 // ═══════════════════════════════════════════════════════════════
 
 function playerHtml() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><title>🎵 Claude Music</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}.progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0}.bar-wrap:active .bar-fill::after{opacity:1}.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude Music</h1><div class="sub">跟 Claude 说"放一首歌"试试<br>本地版 v3.0</div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><title>🎵 Claude Music</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}.progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0}.bar-wrap:active .bar-fill::after{opacity:1}.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude Music</h1><div class="sub">跟 Claude 说"放一首歌"试试<br>本地版 v3.3</div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
 const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[];
 function fm(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec}
 if("mediaSession" in navigator){navigator.mediaSession.setActionHandler("play",()=>togglePlay());navigator.mediaSession.setActionHandler("pause",()=>togglePlay());navigator.mediaSession.setActionHandler("previoustrack",()=>prev());navigator.mediaSession.setActionHandler("nexttrack",()=>next())}
@@ -652,9 +1004,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     // MCP GET
-    if (req.method === "GET" && path === "/api/mcp") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, server: "local", deployId: "v3.0" })); return; }
+    if (req.method === "GET" && path === "/api/mcp") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, server: "local", deployId: "v3.3" })); return; }
     // Health
     if (path === "/api/health") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true })); return; }
+
+    // ── Screen Time API ──
+    // GET /api/screentime/toggle/:appName — iPhone Shortcuts calls this
+    if (req.method === "GET" && path.startsWith("/api/screentime/toggle/")) {
+      const appName = decodeURIComponent(path.split("/api/screentime/toggle/")[1]);
+      const result = await screentimeToggle(appName);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result)); return;
+    }
+    // GET /api/screentime/report — query full report
+    if (req.method === "GET" && path === "/api/screentime/report") {
+      const report = screentimeReport();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(report)); return;
+    }
 
     res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Not found" }));
   } catch (e) {
@@ -672,18 +1039,21 @@ function readBody(req) {
 }
 
 server.listen(PORT, async () => {
-  console.log(`✅ netease-music-mcp v3.0 running on port ${PORT}`);
+  console.log(`✅ netease-music-mcp v3.5 running on port ${PORT}`);
   console.log("   🎵 Netease:", COOKIE ? "OK (" + COOKIE.length + " chars)" : "NOT SET");
   console.log("   🍔 Meituan:", MT_COOKIE ? "OK (" + MT_COOKIE.length + " chars)" : "NOT SET");
   console.log("   🛒 Taobao:", TB_COOKIE ? "OK (" + TB_COOKIE.length + " chars)" : "NOT SET");
   console.log("   🧠 Memory:", "connecting to Ombre-Brain...");
+  console.log("   🌿 Galatea:", GALATEA_TOKEN ? "connecting..." : "NOT SET");
   console.log("   MCP endpoint: http://localhost:" + PORT + "/api/mcp");
   console.log("   Player: http://localhost:" + PORT);
-  // 异步连接 Ombre-Brain，不阻塞服务启动
-  await initOmbreBrain();
-  if (obReady) {
-    console.log("   🧠 Memory: " + obMemoryTools.length + " tools ready (breath/hold/grow/...)");
-  } else {
-    console.log("   🧠 Memory: NOT CONNECTED — start Ombre-Brain on port 18001");
-  }
+  // 异步连接外部服务，不阻塞启动
+  initOmbreBrain().then(() => {
+    if (obReady) console.log("   🧠 Memory: " + obMemoryTools.length + " tools ready");
+    else console.log("   🧠 Memory: NOT CONNECTED — start Ombre-Brain on port 18001");
+  });
+  initGalatea().then(() => {
+    if (galateaReady) console.log("   🌿 Galatea: " + galateaTools.length + " tools ready");
+    else console.log("   🌿 Galatea: NOT CONNECTED — check GALATEA_TOKEN");
+  });
 });
