@@ -288,7 +288,7 @@ function startHeartbeat(roomId, songId = "0", progress = "0") {
       await listenTogetherHeartbeat(roomId, r.songId, "playing", r.progress, COOKIE);
     } catch { /* 静默重试 */ }
   }, 30000);
-  heartbeatRooms.set(roomId, { interval, songId, progress });
+  heartbeatRooms.set(roomId, { interval, songId, progress, seq: 1 });
   return true;
 }
 
@@ -646,9 +646,12 @@ async function execTool(name, args) {
         if (!args.songId) return "❌ 缺少 songId — 先用 ncm_search 搜歌获取 ID";
         const roomId = args.roomId || [...heartbeatRooms.keys()][0];
         if (!roomId) return "❌ 不在任何一起听房间 — 先接受邀请加入房间";
-        await playCommandReport(roomId, args.songId, "0", "playing", HOST_COOKIE);
-        const r = heartbeatRooms.get(roomId);
-        if (r) r.songId = args.songId;
+        const r = heartbeatRooms.get(roomId) || { songId: "0", seq: 1 };
+        const seq = (r.seq || 1) + 1;
+        await playCommandReport(roomId, args.songId, r.songId || "0", "0", "playing", seq, HOST_COOKIE);
+        r.songId = args.songId;
+        r.seq = seq;
+        if (!heartbeatRooms.has(roomId)) heartbeatRooms.set(roomId, r);
         return `🔀 已切歌 → ${args.songId}（实时生效）`;
       }
       case "ncm_add_song": {
@@ -658,7 +661,7 @@ async function execTool(name, args) {
         const roomId = args.roomId || [...heartbeatRooms.keys()][0];
         if (!roomId) return "❌ 不在任何一起听房间 — 先接受邀请加入房间";
         await addSongToList(roomId, songIds, HOST_COOKIE);
-        return `➕ 已加歌到房间队列: ${songIds.join(", ")}（⚠️ 需清 APP 后台重进才能同步列表，之后用 ncm_switch_song 切歌）`;
+        return `➕ 已加歌到房间队列: ${songIds.join(", ")}（无需清后台，立即可用 ncm_switch_song 切歌）`;
       }
       case "ncm_heartbeat": {
         if (!args.roomId) return "Missing roomId";
