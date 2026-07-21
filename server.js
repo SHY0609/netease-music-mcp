@@ -565,8 +565,8 @@ const tools = [
   { name: "ncm_accept_invite", description: "Accept a listen-together invitation (from private message). Starts auto-heartbeat.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, inviterId: { type: "string" } }, required: ["roomId", "inviterId"] } },
   { name: "ncm_leave_room", description: "End listen-together session. Stops heartbeat.", inputSchema: { type: "object", properties: { roomId: { type: "string" } }, required: [] } },
   { name: "ncm_room_status", description: "Get listen-together room status and playlist.", inputSchema: { type: "object", properties: { roomId: { type: "string" } }, required: ["roomId"] } },
-  { name: "ncm_switch_song", description: "切歌 — 实时跳到指定歌曲（仅限已在播放列表中的歌）。新加的歌需先清 APP 后台同步列表后才能切。roomId 可选，不传自动取心跳房间。", inputSchema: { type: "object", properties: { roomId: { type: "string", description: "房间ID，可选（自动取心跳房间）" }, songId: { type: "string", description: "歌曲ID（从 ncm_search 获取）" } }, required: ["songId"] } },
-  { name: "ncm_add_song", description: "加歌到一起听播放列表。⚠️ 加歌后需清 APP 后台重进才能同步！支持逗号分隔多首（如 '123,456'）。roomId 可选，不传自动取心跳房间。", inputSchema: { type: "object", properties: { roomId: { type: "string", description: "房间ID，可选（自动取心跳房间）" }, songId: { type: "string", description: "歌曲ID，逗号分隔多个（如 '123,456'）" } }, required: ["songId"] } },
+  { name: "ncm_switch_song", description: "Switch to a song (must already be in playlist). roomId auto-detects if omitted.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, songId: { type: "string" } }, required: ["songId"] } },
+  { name: "ncm_add_song", description: "Add songs to listen-together queue (comma-separated). roomId auto-detects.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, songId: { type: "string" } }, required: ["songId"] } },
   { name: "ncm_heartbeat", description: "Manually start/stop heartbeat for a listen-together room.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, action: { type: "string", description: "'start' or 'stop'" } }, required: ["roomId", "action"] } },
   // ── 网易云私信 ──
   { name: "ncm_send_message", description: "Send a private message to a Netease user.", inputSchema: { type: "object", properties: { userId: { type: "string", description: "User ID to message" }, msg: { type: "string", description: "Message content" } }, required: ["userId", "msg"] } },
@@ -631,7 +631,16 @@ async function execTool(name, args) {
       }
       case "ncm_room_status": {
         if (!args.roomId) return "Missing roomId";
-        return JSON.stringify(await listenTogetherStatus(args.roomId, COOKIE));
+        const raw = await listenTogetherStatus(args.roomId, COOKIE);
+        const pc = raw?.data?.playCommand || {};
+        const pl = raw?.data?.playlist?.displayList?.result || [];
+        return JSON.stringify({
+          songId: pc.targetSongId || "",
+          status: pc.playStatus || "",
+          commandType: pc.commandType || "",
+          playlistCount: pl.length,
+          playlist: pl.slice(0, 5), // 只返回前5首，省 token
+        });
       }
       case "ncm_switch_song": {
         if (!args.songId) return "❌ 缺少 songId — 先用 ncm_search 搜歌获取 ID";
@@ -665,7 +674,21 @@ async function execTool(name, args) {
       case "ncm_read_messages": {
         if (!args.userId) return "Missing userId";
         const data = await getPrivateMessages(args.userId, COOKIE, args.limit || 20);
-        return JSON.stringify(data);
+        // 瘦身：只保留 nickname + msg + type + time，砍掉完整 profile
+        const msgs = (data.msgs || []).map(m => {
+          let inner = {};
+          try { inner = JSON.parse(m.msg); } catch {}
+          return {
+            from: m.fromUser?.nickname || "",
+            msg: inner.msg || inner.title || "",
+            type: inner.type || "",
+            notice: inner.generalMsg?.noticeMsg || "",
+            roomId: (inner.generalMsg?.nativeUrl || "").match(/roomId%3D([^%]+)/)?.[1] || "",
+            inviterId: (inner.generalMsg?.nativeUrl || "").match(/inviterId%3D(\d+)/)?.[1] || "",
+            time: m.time || 0,
+          };
+        });
+        return JSON.stringify({ more: data.more, msgs });
       }
       case "ncm_message_list": {
         return JSON.stringify(await getPrivateList(COOKIE));
