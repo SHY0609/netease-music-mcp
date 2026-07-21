@@ -17,7 +17,14 @@
 import http from "node:http";
 import { deflateSync } from "node:zlib";
 import { createRequire } from "node:module";
-import { weapi } from "./lib/netease.js";
+import {
+  weapi, eapiEncrypt, eapiPost,
+  getUserPlaylists, searchSongs, getSongDetail, getLyrics,
+  getPlaylistDetail, addToPlaylist, getPlaylistTracks,
+  acceptListenTogether, endListenTogether, listenTogetherHeartbeat,
+  listenTogetherStatus, playCommandReport, addSongToList,
+  sendPrivateMessage, getPrivateList, getPrivateMessages,
+} from "./lib/netease.js";
 import { tbSearch, tbDetail } from "./lib/taobao.js";
 import { toggle as screentimeToggle, getReport as screentimeReport, getSummary as screentimeSummary } from "./lib/screentime.js";
 // 淘宝开放平台（官方 API，不会被风控）
@@ -33,6 +40,7 @@ const cdp = require("./lib/cdp-meituan.cjs");
 const dy = require("./lib/cdp-douyin.cjs");  // 抖音 CDP
 
 const COOKIE = process.env.NETEASE_COOKIE || "";
+const HOST_COOKIE = process.env.NCM_HOST_COOKIE || COOKIE; // VIP 房主 cookie，用于加歌/切歌（客人无权限）
 const MT_COOKIE = process.env.MEITUAN_COOKIE || "";
 const TB_COOKIE = process.env.TAOBAO_COOKIE || "";
 const PORT = process.env.PORT || 3000;
@@ -266,85 +274,31 @@ async function forwardToGalatea(msg) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 🎵 网易云音乐（weapi）
-// ═══════════════════════════════════════════════════════════════
+// ─── 一起听心跳管理器 ──────────────────────────────────────
+const heartbeatRooms = new Map(); // roomId → { interval, songId, progress }
 
-async function ncApi(path, data) {
-  const body = weapi(data);
-  const res = await fetch(`https://music.163.com/weapi${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", cookie: COOKIE, referer: "https://music.163.com/", "user-agent": UA },
-    body,
-  });
-  const text = await res.text();
-  try { return JSON.parse(text); }
-  catch { throw new Error(`Netease: ${text.slice(0, 200)}`); }
-}
-
-async function searchSongs(kw, limit = 8) {
-  const r = await ncApi("/cloudsearch/get/web", { s: kw, type: 1, limit, offset: 0 });
-  if (r.code !== 200) throw new Error(r.message || "search failed");
-  return (r.result?.songs || []).map(s => ({
-    id: String(s.id), name: s.name,
-    artist: (s.ar || []).map(a => a.name).join(" / "),
-    album: (s.al || {}).name || "",
-    coverUrl: (s.al || {}).picUrl || "",
-    durationMs: s.dt || 0,
-  }));
-}
-
-async function getSongUrl(id) {
-  const r = await ncApi("/song/enhance/player/url/v1", { ids: `[${id}]`, level: "exhigh", encodeType: "mp3" });
-  const url = r.data?.[0]?.url;
-  if (url) return url.replace(/^http:\/\//, "https://");
-  try {
-    const r2 = await fetch(`https://music.163.com/song/media/outer/url?id=${id}`, { redirect: "manual", headers: { "user-agent": UA, referer: "https://music.163.com/" } });
-    const loc = r2.headers.get("location") || "";
-    if (!loc.includes("/404")) return loc.replace(/^http:\/\//, "https://");
-  } catch {}
-  return "";
-}
-
-async function getPlaylists() {
-  const r = await ncApi("/user/playlist", { uid: "", limit: 50, offset: 0, includeVideo: true });
-  return (r.playlist || []).map(p => ({ id: String(p.id), name: p.name, trackCount: p.trackCount }));
-}
-
-async function getPlaylistDetail(id) {
-  const r = await ncApi("/v6/playlist/detail", { id: String(id), n: 30, s: 0 });
-  const p = r.playlist || {};
-  return { name: p.name || "", tracks: (p.tracks || []).map(s => ({ id: String(s.id), name: s.name, artist: (s.ar || []).map(a => a.name).join(" / ") })) };
-}
-
-async function addToPlaylist(pid, songId) {
-  const r = await ncApi("/playlist/manipulate/tracks", { op: "add", pid: String(pid), trackIds: `[${songId}]` });
-  if (r.code !== 200) throw new Error(r.message || r.msg || "add failed");
+function startHeartbeat(roomId, songId = "0", progress = "0") {
+  if (heartbeatRooms.has(roomId)) {
+    clearInterval(heartbeatRooms.get(roomId).interval);
+  }
+  const interval = setInterval(async () => {
+    try {
+      const r = heartbeatRooms.get(roomId);
+      if (!r) return;
+      await listenTogetherHeartbeat(roomId, r.songId, "playing", r.progress, COOKIE);
+    } catch { /* 静默重试 */ }
+  }, 30000);
+  heartbeatRooms.set(roomId, { interval, songId, progress });
   return true;
 }
 
-async function getLyricsRaw(id) {
-  try {
-    const r = await ncApi("/song/lyric", { id: String(id), lv: 1, tv: 1 });
-    return (r.lrc?.lyric || "") + "\n" + (r.tlyric?.lyric || "");
-  } catch { return ""; }
+function stopHeartbeat(roomId) {
+  const r = heartbeatRooms.get(roomId);
+  if (!r) return false;
+  clearInterval(r.interval);
+  heartbeatRooms.delete(roomId);
+  return true;
 }
-
-function parseLrc(lrc) {
-  const lines = [];
-  for (const raw of lrc.split(/\r?\n/)) {
-    const matches = [...raw.matchAll(/\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?\]/g)];
-    const text = raw.replace(/\[[^\]]+]/g, "").trim();
-    for (const m of matches) lines.push({ time: Number(m[1]) * 60 + Number(m[2]) + (Number(m[3] || "0") || 0) / 1000, text });
-  }
-  return lines.filter(l => l.text).sort((a, b) => a.time - b.time);
-}
-function lyricsAround(lines, time, n = 4) {
-  let idx = lines.findIndex(l => l.time >= time);
-  if (idx < 0) idx = Math.max(0, lines.length - n);
-  return { past: lines.slice(Math.max(0, idx - 1), idx).map(l => l.text), current: lines[idx]?.text || "", upcoming: lines.slice(idx + 1, idx + 1 + n).map(l => l.text) };
-}
-function fm(s) { const m = Math.floor((s || 0) / 60), sec = Math.floor((s || 0) % 60); return m + ":" + (sec < 10 ? "0" : "") + sec; }
 
 // ═══════════════════════════════════════════════════════════════
 // 🍔 美团外卖
@@ -593,12 +547,6 @@ async function mtPlaceOrder(shopId, itemId, skuId, addressId, quantity, attrIds,
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🧠 Player State
-// ═══════════════════════════════════════════════════════════════
-
-const state = { queue: [], current: null, status: "idle", currentTime: 0, lyrics: null };
-
-// ═══════════════════════════════════════════════════════════════
 // 🔌 MCP Protocol
 // ═══════════════════════════════════════════════════════════════
 
@@ -607,16 +555,23 @@ const txt = (id, text) => ok(id, { content: [{ type: "text", text }] });
 const mcpInfo = { protocolVersion: "2024-11-05", serverInfo: { name: "Yuuke", version: "3.9.0" }, capabilities: { tools: {} } };
 
 const tools = [
-  // ── 网易云 ──
-  { name: "play", description: "Search and play a song.", inputSchema: { type: "object", properties: { keyword: { type: "string" } }, required: ["keyword"] } },
-  { name: "skip", description: "Skip to next song.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "pause", description: "Toggle pause/resume.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "queue", description: "View current queue.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "playlists", description: "Get your playlists.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "add_to_playlist", description: "Add current song to a playlist.", inputSchema: { type: "object", properties: { songId: { type: "string" }, playlistId: { type: "string" } }, required: ["playlistId"] } },
+  // ── 网易云（歌单管理）──
+  { name: "playlists", description: "Get your Netease playlists.", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "add_to_playlist", description: "Add a song to a playlist by song ID.", inputSchema: { type: "object", properties: { songId: { type: "string" }, playlistId: { type: "string" } }, required: ["playlistId", "songId"] } },
   { name: "playlist_tracks", description: "Get tracks in a playlist.", inputSchema: { type: "object", properties: { playlistId: { type: "string" } }, required: ["playlistId"] } },
-  { name: "current_song", description: "Get current song info and lyrics context.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "lyrics", description: "Get full lyrics.", inputSchema: { type: "object", properties: { songId: { type: "string" } }, required: [] } },
+  // ── 网易云一起听 ──
+  { name: "ncm_search", description: "Search Netease Cloud Music. Returns id, name, artist, album for each result.", inputSchema: { type: "object", properties: { keyword: { type: "string" }, limit: { type: "number", default: 8 } }, required: ["keyword"] } },
+  { name: "ncm_song_detail", description: "Get song detail + full lyrics by song ID.", inputSchema: { type: "object", properties: { songId: { type: "string" } }, required: ["songId"] } },
+  { name: "ncm_accept_invite", description: "Accept a listen-together invitation (from private message). Starts auto-heartbeat.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, inviterId: { type: "string" } }, required: ["roomId", "inviterId"] } },
+  { name: "ncm_leave_room", description: "End listen-together session. Stops heartbeat.", inputSchema: { type: "object", properties: { roomId: { type: "string" } }, required: [] } },
+  { name: "ncm_room_status", description: "Get listen-together room status and playlist.", inputSchema: { type: "object", properties: { roomId: { type: "string" } }, required: ["roomId"] } },
+  { name: "ncm_switch_song", description: "切歌 — 实时跳到指定歌曲（仅限已在播放列表中的歌）。新加的歌需先清 APP 后台同步列表后才能切。roomId 可选，不传自动取心跳房间。", inputSchema: { type: "object", properties: { roomId: { type: "string", description: "房间ID，可选（自动取心跳房间）" }, songId: { type: "string", description: "歌曲ID（从 ncm_search 获取）" } }, required: ["songId"] } },
+  { name: "ncm_add_song", description: "加歌到一起听播放列表。⚠️ 加歌后需清 APP 后台重进才能同步！支持逗号分隔多首（如 '123,456'）。roomId 可选，不传自动取心跳房间。", inputSchema: { type: "object", properties: { roomId: { type: "string", description: "房间ID，可选（自动取心跳房间）" }, songId: { type: "string", description: "歌曲ID，逗号分隔多个（如 '123,456'）" } }, required: ["songId"] } },
+  { name: "ncm_heartbeat", description: "Manually start/stop heartbeat for a listen-together room.", inputSchema: { type: "object", properties: { roomId: { type: "string" }, action: { type: "string", description: "'start' or 'stop'" } }, required: ["roomId", "action"] } },
+  // ── 网易云私信 ──
+  { name: "ncm_send_message", description: "Send a private message to a Netease user.", inputSchema: { type: "object", properties: { userId: { type: "string", description: "User ID to message" }, msg: { type: "string", description: "Message content" } }, required: ["userId", "msg"] } },
+  { name: "ncm_read_messages", description: "Read private message history with a user (to find listen-together invites).", inputSchema: { type: "object", properties: { userId: { type: "string" }, limit: { type: "number", default: 20 } }, required: ["userId"] } },
+  { name: "ncm_message_list", description: "Get recent private message contact list.", inputSchema: { type: "object", properties: {}, required: [] } },
   // ── 美团 ──
   { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery).", inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
   { name: "mt_addresses", description: "Get saved delivery addresses from Meituan.", inputSchema: { type: "object", properties: {}, required: [] } },
@@ -627,11 +582,6 @@ const tools = [
   { name: "dy_trending", description: "抖音热搜榜 — 当前最火的话题和视频。", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "dy_video", description: "获取抖音视频详情 — 标题、点赞、评论、分享数、发布时间。", inputSchema: { type: "object", properties: { videoId: { type: "string", description: "视频 ID 或完整 URL（自动提取 ID）" } }, required: ["videoId"] } },
   { name: "dy_user", description: "抖音用户主页 — 昵称、简介、粉丝数、获赞数、作品数。", inputSchema: { type: "object", properties: { userId: { type: "string", description: "用户 ID（sec_uid 或 uid）" } }, required: ["userId"] } },
-  { name: "dy_cookie", description: "设置抖音 Cookie（从浏览器复制）。对标美团: 电脑浏览器登录 douyin.com → F12 → Application → Cookies → 全选复制 → 贴到这里。", inputSchema: { type: "object", properties: { cookie: { type: "string", description: "从浏览器复制的完整 Cookie 字符串" } }, required: ["cookie"] } },
-  { name: "dy_login", description: "（已废弃）请改用 dy_cookie 手动导入 Cookie。电脑浏览器登录 douyin.com，F12 复制 Cookie 后使用 dy_cookie。", inputSchema: { type: "object", properties: { account: { type: "string" } }, required: [] } },
-  { name: "dy_switch", description: "切换当前活跃的抖音账号。切换后所有 dy_* 操作都用该账号。", inputSchema: { type: "object", properties: { account: { type: "string", description: "账号名，如 '小号'/'大号'" } }, required: ["account"] } },
-  { name: "dy_notifications", description: "查看抖音通知 — 谁评论了你、点赞了你、关注了你。需先登录。", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "dy_messages", description: "查看抖音私信/消息列表 — 谁给你发了私信，最后一条是什么。需先登录。", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "dy_comment", description: "在抖音视频下发评论或回复他人评论。replyTo 填要回复的评论内容关键词可以发子评论。", inputSchema: { type: "object", properties: { videoId: { type: "string", description: "视频 ID 或完整 URL" }, text: { type: "string", description: "评论内容" }, replyTo: { type: "string", description: "可选，要回复的评论内容关键词（匹配到就发子评论）" } }, required: ["videoId", "text"] } },
   // ── 淘宝 ──
   { name: "tb_search", description: "Search products on Taobao. Returns name, price, sales, shop, and purchase link.", inputSchema: { type: "object", properties: { keyword: { type: "string", description: "Search keyword" }, minPrice: { type: "string", description: "Minimum price filter (client-side)" }, maxPrice: { type: "string", description: "Maximum price filter (client-side)" }, sort: { type: "string", description: "Sort: _coefp (relevance, default), _sale (sales), _price (price low→high), _priceD (price high→low)" }, page: { type: "number", default: 1, description: "Page number" }, pageSize: { type: "number", default: 20, description: "Results per page" } }, required: ["keyword"] } },
@@ -645,57 +595,92 @@ const tools = [
 async function execTool(name, args) {
   try {
     switch (name) {
-      // ── 音乐 ──
-      case "play": {
-        const songs = await searchSongs(args.keyword, 8);
-        if (!songs.length) return `No results for "${args.keyword}"`;
-        const checks = await Promise.all(songs.map(async s => { try { return (await getSongUrl(s.id)) ? s : null; } catch { return null; } }));
-        const pick = checks.find(Boolean);
-        if (!pick) return `No playable songs for "${args.keyword}"`;
-        state.current = { id: pick.id, name: pick.name, artist: pick.artist, album: pick.album, coverUrl: pick.coverUrl, durationMs: pick.durationMs, playUrl: "" };
-        state.status = "playing";
-        if (!state.queue.find(q => q.id === pick.id)) state.queue.unshift(pick);
-        return `🎵 ${pick.name} - ${pick.artist}`;
-      }
-      case "skip":
-        if (state.queue.length > 1) { state.queue.shift(); state.current = state.queue[0]; state.current.playUrl = ""; state.status = "playing"; return `⏭ ${state.current.name}`; }
-        if (state.current?.id) { state.status = "playing"; state.current.playUrl = ""; return `🔄 Replaying ${state.current.name}`; }
-        state.status = "idle"; return "Queue empty";
-      case "pause": state.status = state.status === "paused" ? "playing" : "paused"; return state.status === "paused" ? "⏸ Paused" : "▶ Playing";
-      case "queue": return JSON.stringify({ current: state.current?.name || null, count: state.queue.length, status: state.status });
-      case "playlists": return JSON.stringify(await getPlaylists());
+      // ── 网易云歌单 ──
+      case "playlists": return JSON.stringify(await getUserPlaylists(COOKIE));
       case "add_to_playlist": {
-        const sid = args.songId || state.current?.id;
-        if (!sid) return "No song to add";
-        await addToPlaylist(args.playlistId, sid);
+        if (!args.songId) return "Missing songId";
+        await addToPlaylist(args.playlistId, [args.songId], COOKIE);
         return `✅ Added to playlist ${args.playlistId}`;
       }
-      case "playlist_tracks": return JSON.stringify(await getPlaylistDetail(args.playlistId));
-      case "current_song": {
-        if (!state.current) return "No song playing";
-        if (!state.lyrics || state.lyrics._id !== state.current.id) {
-          state.lyrics = { _id: state.current.id, lines: parseLrc(await getLyricsRaw(state.current.id)) };
-        }
-        return JSON.stringify({ name: state.current.name, artist: state.current.artist, position: fm(state.currentTime), positionSec: state.currentTime, lyricsContext: lyricsAround(state.lyrics.lines, state.currentTime, 4) });
+      case "playlist_tracks": return JSON.stringify(await getPlaylistDetail(args.playlistId, COOKIE));
+      // ── 网易云一起听 ──
+      case "ncm_search": {
+        const songs = await searchSongs(args.keyword, COOKIE, args.limit || 8);
+        return JSON.stringify(songs);
       }
-      case "lyrics": {
-        const id = args.songId || state.current?.id;
-        if (!id) return "No song specified";
-        return (await getLyricsRaw(id)) || "(no lyrics)";
+      case "ncm_song_detail": {
+        if (!args.songId) return "Missing songId";
+        const detail = await getSongDetail(args.songId, COOKIE);
+        let lyrics = "";
+        try { lyrics = await getLyrics(args.songId, COOKIE); } catch {}
+        return JSON.stringify({ ...detail, lyrics: lyrics || "" });
+      }
+      case "ncm_accept_invite": {
+        if (!args.roomId || !args.inviterId) return "Missing roomId or inviterId";
+        if (!COOKIE) return "NETEASE_COOKIE not set";
+        const result = await acceptListenTogether(args.roomId, args.inviterId, 1, COOKIE);
+        startHeartbeat(args.roomId);
+        return JSON.stringify({ ok: true, roomId: args.roomId, msg: "Joined! Heartbeat started (30s interval)." });
+      }
+      case "ncm_leave_room": {
+        const roomId = args.roomId || [...heartbeatRooms.keys()][0];
+        if (!roomId) return "No active room — pass roomId or join one first";
+        const result = await endListenTogether(roomId, COOKIE);
+        stopHeartbeat(roomId);
+        return JSON.stringify({ ok: true, msg: "Left room, heartbeat stopped." });
+      }
+      case "ncm_room_status": {
+        if (!args.roomId) return "Missing roomId";
+        return JSON.stringify(await listenTogetherStatus(args.roomId, COOKIE));
+      }
+      case "ncm_switch_song": {
+        if (!args.songId) return "❌ 缺少 songId — 先用 ncm_search 搜歌获取 ID";
+        const roomId = args.roomId || [...heartbeatRooms.keys()][0];
+        if (!roomId) return "❌ 不在任何一起听房间 — 先接受邀请加入房间";
+        await playCommandReport(roomId, args.songId, "0", "playing", HOST_COOKIE);
+        const r = heartbeatRooms.get(roomId);
+        if (r) r.songId = args.songId;
+        return `🔀 已切歌 → ${args.songId}（实时生效）`;
+      }
+      case "ncm_add_song": {
+        if (!args.songId) return "❌ 缺少 songId — 先用 ncm_search 搜歌获取 ID";
+        const songIds = args.songId.split(",").map(s => s.trim()).filter(Boolean);
+        if (!songIds.length) return "❌ songId 格式错误";
+        const roomId = args.roomId || [...heartbeatRooms.keys()][0];
+        if (!roomId) return "❌ 不在任何一起听房间 — 先接受邀请加入房间";
+        await addSongToList(roomId, songIds, HOST_COOKIE);
+        return `➕ 已加歌到房间队列: ${songIds.join(", ")}（⚠️ 需清 APP 后台重进才能同步列表，之后用 ncm_switch_song 切歌）`;
+      }
+      case "ncm_heartbeat": {
+        if (!args.roomId) return "Missing roomId";
+        if (args.action === "stop") return stopHeartbeat(args.roomId) ? "🛑 Heartbeat stopped" : "No active heartbeat";
+        return startHeartbeat(args.roomId) ? "💓 Heartbeat started (30s)" : "Already running";
+      }
+      // ── 网易云私信 ──
+      case "ncm_send_message": {
+        if (!args.userId || !args.msg) return "Need userId and msg";
+        await sendPrivateMessage([args.userId], args.msg, "text", COOKIE);
+        return `✉️ Sent: "${args.msg.slice(0, 50)}"`;
+      }
+      case "ncm_read_messages": {
+        if (!args.userId) return "Missing userId";
+        const data = await getPrivateMessages(args.userId, COOKIE, args.limit || 20);
+        return JSON.stringify(data);
+      }
+      case "ncm_message_list": {
+        return JSON.stringify(await getPrivateList(COOKIE));
       }
       // ── 美团（CDP 浏览器优先，API 签名兜底）──
       case "mt_search": {
         const keyword = args.keyword || (typeof args === "string" ? args : "汉堡");
-        try {
-          console.error("[mt_search] calling cdp.mtSearch...");
-          const cdpResult = await cdp.mtSearch(keyword);
-          console.error("[mt_search] CDP done, source:", cdpResult.source, "textLen:", (cdpResult.rawText||"").length);
-          if (cdpResult.source === "real") return JSON.stringify(cdpResult);
-        } catch (e) { console.error("[mt_search] CDP threw:", e.message); }
-        // fallback: API
-        let result = await mtSearch(keyword, args.lat, args.lng);
-        if (result.source !== "real") { await new Promise(r => setTimeout(r, 3000)); result = await mtSearch(keyword, args.lat, args.lng); }
-        if (result.shops) result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: s.products }));
+        // 🔥 API 优先（CDP 浏览器常被美团风控）
+        const result = await mtSearch(keyword, args.lat, args.lng);
+        if (result.source === "real" && result.shops?.length > 0) {
+          if (result.shops) result.shops = result.shops.map(s => ({ id: s.id, name: s.name, addr: (s.addr||"").slice(0,30), score: s.score, distance: s.distance, deliveryTime: s.deliveryTime, shippingFee: s.shippingFee, minPrice: s.minPrice, monthSales: s.monthSales, products: s.products }));
+          return JSON.stringify(result);
+        }
+        // fallback: CDP 浏览器
+        try { const cdpResult = await cdp.mtSearch(keyword); if (cdpResult.source === "real") return JSON.stringify(cdpResult); } catch {}
         return JSON.stringify(result);
       }
       case "mt_menu": {
@@ -710,19 +695,30 @@ async function execTool(name, args) {
         return JSON.stringify({ source: "error", reason: "need shopName or shopId" });
       }
       case "mt_order": {
-        // CDP 完整下单链路
-        const shop = args.shopName || args.shop || "";
-        const product = args.productName || args.itemName || args.product || "";
-        const addr = args.addressName || args.address || "黎先菜店";
-        if (!shop || !product) return JSON.stringify({ source: "error", reason: "need shopName and productName" });
-        try {
-          const order = await cdp.mtOrder(shop, product, addr, args.quantity || 1);
-          return JSON.stringify(order);
-        } catch (e) { console.error("[mt_order] CDP failed:", e.message); }
-        // fallback: API (大概率 code 3)
-        const order = await mtPlaceOrder(args.shopId, args.itemId, args.skuId, args.addressId, args.quantity || 1, args.attrIds || [], args.remark || "");
-        if (order.source === "real") return `💰 预览订单\n商品: ${args.itemId}\n实付: ¥${order.totalPrice}\n配送费: ¥${order.deliveryFee}`;
+        // 🔥 直接走 API 下单（CDP 浏览器常被美团风控）
+        const shopId = args.shopId || "";
+        const itemId = args.itemId || "";
+        const skuId = args.skuId || itemId;
+        const addrId = args.addressId || "1950000001"; // 默认"宋-黎先菜店"
+        if (!shopId || !itemId) return JSON.stringify({ source: "error", reason: "需要 shopId 和 itemId/skuId（从 mt_search 结果中获取）" });
+
+        const order = await mtPlaceOrder(shopId, itemId, skuId, addrId, args.quantity || 1, args.attrIds || [], args.remark || "");
+
+        if (order.source === "real" && order.step === "created") {
+          const payUrl = order.payUrl || "";
+          return JSON.stringify({
+            ...order,
+            hint: payUrl ? `💳 订单已创建！[点此付款](${payUrl})` : "订单已创建，请打开美团App付款",
+          });
+        }
+        if (order.source === "real") {
+          return JSON.stringify({ ...order, hint: `预览成功。实付 ¥${order.totalPrice}。再调一次 mt_order 确认下单。` });
+        }
         return JSON.stringify(order);
+      }
+      case "mt_addresses": {
+        const addrs = await mtGetAddresses();
+        return JSON.stringify(addrs);
       }
       // ── 抖音（CDP 浏览器，SSR JSON 优先）──
       case "dy_search": {
@@ -877,20 +873,6 @@ async function handleMcpMessage(msg) {
     if (method === "tools/list") return ok(id, { tools: [...tools, ...obMemoryTools, ...galateaTools] });
     if (method === "tools/call") {
       const toolName = params.name;
-      // 抖音 Cookie 注入
-      if (toolName === "dy_cookie") {
-        const result = dy.dyCookie(params.arguments?.cookie || "");
-        return txt(id, JSON.stringify(result));
-      }
-      // 抖音登录（已废弃，提示用 dy_cookie）
-      if (toolName === "dy_login") {
-        return txt(id, JSON.stringify({ ok: false, hint: "请用 dy_cookie 代替。电脑浏览器打开 douyin.com 登录后，F12 → Application → Cookies → 全选复制，然后说'设置抖音Cookie: [粘贴]'。" }));
-      }
-      // 抖音切换账号
-      if (toolName === "dy_switch") {
-        const result = dy.dySwitch(params.arguments?.account || "default");
-        return txt(id, JSON.stringify(result));
-      }
       // 记忆类工具 → 转发到 Ombre-Brain
       if (isMemoryTool(toolName)) {
         const result = await forwardToOB(msg);
@@ -910,41 +892,6 @@ async function handleMcpMessage(msg) {
   } catch (e) { return txt(id, `❌ ${e.message}`); }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 🎨 Player HTML
-// ═══════════════════════════════════════════════════════════════
-
-function playerHtml() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover"/><title>🎵 Claude Music</title><style>*{margin:0;padding:0;box-sizing:border-box}:root{color-scheme:dark;--bg:#0d0d0d;--card:#1a1a1a;--muted:#888;--accent:#e83e3e;--text:#eee}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:max(16px,4vw);-webkit-tap-highlight-color:transparent}h1{font-size:clamp(18px,4.5vw,24px);margin-bottom:4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}.art{width:min(240px,58vw);aspect-ratio:1;border-radius:16px;object-fit:cover;background:var(--card);margin-bottom:14px}.info{text-align:center;margin-bottom:8px}.info .name{font-size:clamp(15px,3.6vw,19px);font-weight:700}.info .artist{color:var(--muted);font-size:13px;margin-top:3px}.progress-wrap{width:100%;max-width:min(340px,80vw);margin-bottom:6px}.progress-row{display:flex;align-items:center;gap:10px}.time{font-size:11px;color:var(--muted);min-width:36px}.bar-wrap{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}.bar-bg{width:100%;height:4px;background:rgba(255,255,255,.12);border-radius:2px}.bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s linear}.bar-fill::after{content:"";position:absolute;right:-5px;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--accent);opacity:0}.bar-wrap:active .bar-fill::after{opacity:1}.controls{display:flex;gap:18px;align-items:center;justify-content:center;margin-bottom:22px}.btn{border:none;border-radius:50%;display:grid;place-items:center;cursor:pointer;transition:.15s;background:var(--card);color:var(--text)}.btn:active{opacity:.7}.btn.small{width:42px;height:42px}.btn.big{width:58px;height:58px;background:var(--accent);color:#fff}.btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.btn.big svg{width:24px;height:24px;fill:currentColor}.queue{width:100%;max-width:min(360px,85vw);margin-top:4px}.queue h3{font-size:13px;color:var(--muted);margin-bottom:8px}.queue-item{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;margin-bottom:5px;background:var(--card)}.queue-item.active{background:#2a1a1a;border:1px solid var(--accent)}.queue-item img{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#222;flex-shrink:0}.queue-item .qi{min-width:0}.queue-item .qname{font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.queue-item .qart{font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.empty{color:var(--muted);font-size:13px;text-align:center;padding:20px}.status{font-size:11px;color:var(--muted);margin-top:6px;text-align:center}</style></head><body><h1>🎵 Claude Music</h1><div class="sub">跟 Claude 说"放一首歌"试试<br>本地版 v3.3</div><img class="art" id="art" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect fill='%231a1a1a' width='200' height='200'/><text fill='%23888' x='100' y='110' text-anchor='middle' font-size='40'>🎵</text></svg>"><div class="info"><div class="name" id="name">等待播放</div><div class="artist" id="artist">告诉 Claude 你想听什么</div></div><div class="progress-wrap"><div class="progress-row"><span class="time" id="curTime">0:00</span><div class="bar-wrap" id="barWrap"><div class="bar-bg"><div class="bar-fill" id="barFill" style="width:0%"></div></div></div><span class="time end" id="durTime">0:00</span></div></div><div class="controls"><button class="btn small" onclick="prev()"><svg viewBox="0 0 24 24"><polyline points="19 20 9 12 19 4"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button><button class="btn big" id="playBtn" onclick="togglePlay()"><svg id="playIcon" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20"/></svg></button><button class="btn small" onclick="next()"><svg viewBox="0 0 24 24"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button></div><div class="queue"><h3>📋 播放队列</h3><div id="queue"></div></div><div class="status" id="status">已连接</div><audio id="audio" style="display:none" preload="auto"></audio><script>
-const a=document.getElementById("audio");let currentId=null,resolvingUrl=null,lastQueueStr="",localQueue=[];
-function fm(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec}
-if("mediaSession" in navigator){navigator.mediaSession.setActionHandler("play",()=>togglePlay());navigator.mediaSession.setActionHandler("pause",()=>togglePlay());navigator.mediaSession.setActionHandler("previoustrack",()=>prev());navigator.mediaSession.setActionHandler("nexttrack",()=>next())}
-async function poll(){try{const r=await fetch("/api/state");if(!r.ok)return;render(await r.json())}catch(e){}}
-function resolveUrlFor(songId){if(!songId||resolvingUrl===songId)return;resolvingUrl=songId;document.getElementById("status").textContent="🔊 加载音频...";fetch("/api/url?id="+encodeURIComponent(songId)).then(r=>r.json()).then(j=>{if(j.playUrl&&currentId===songId){a.src=j.playUrl;a.play().catch(()=>{});document.getElementById("status").textContent="▶ 播放中"}else if(currentId===songId)document.getElementById("status").textContent="⚠ 无播放链接";resolvingUrl=null}).catch(()=>{resolvingUrl=null})}
-function render(d){
-  if(d.current&&d.current.id){var ex=localQueue.some(t=>t.id===d.current.id);if(!ex)localQueue.push({id:d.current.id,name:d.current.name,artist:d.current.artist,coverUrl:d.current.coverUrl,durationMs:d.current.durationMs})}
-  if(d.queue&&d.queue.length>0){d.queue.forEach(s=>{if(!localQueue.some(t=>t.id===s.id))localQueue.push(s)})}
-  if(!currentId&&d.current&&d.current.id){currentId=d.current.id;document.getElementById("art").src=d.current.coverUrl||"";document.getElementById("name").textContent=d.current.name||"";document.getElementById("artist").textContent=d.current.artist||"";if("mediaSession" in navigator)navigator.mediaSession.metadata=new MediaMetadata({title:d.current.name,artist:d.current.artist,album:d.current.album||"",artwork:[{src:d.current.coverUrl||"",sizes:"300x300"}]});if(d.playUrl){a.src=d.playUrl;a.play().catch(()=>{})}else resolveUrlFor(d.current.id)}
-  if(a.duration&&!isNaN(a.duration)){document.getElementById("barFill").style.width=(a.currentTime/a.duration*100).toFixed(1)+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}
-  document.getElementById("playIcon").innerHTML=a.paused?'<polygon points="6 4 20 12 6 20"/>':'<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>';
-  var qStr=localQueue.map(t=>t.id).join(",")+"|"+currentId;
-  if(qStr!==lastQueueStr){lastQueueStr=qStr;var el=document.getElementById("queue");if(!localQueue.length)el.innerHTML='<div class="empty">队列空的</div>';else{var h='';localQueue.forEach(t=>{h+='<div class="queue-item'+(t.id===currentId?' active':'')+'"><img src="'+(t.coverUrl||'')+'" onerror="this.style.display=\\'none\\'"><div class="qi"><div class="qname">'+esc(t.name)+'</div><div class="qart">'+esc(t.artist)+'</div></div></div>'});el.innerHTML=h}}
-}
-function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
-function playSong(t){currentId=t.id;document.getElementById("art").src=t.coverUrl||"";document.getElementById("name").textContent=t.name||"";document.getElementById("artist").textContent=t.artist||"";if("mediaSession" in navigator)navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:t.artist,artwork:[{src:t.coverUrl||"",sizes:"300x300"}]});resolveUrlFor(t.id)}
-function togglePlay(){a.paused?a.play().catch(()=>{}):a.pause()}
-function next(){a.pause();var i=localQueue.findIndex(t=>t.id===currentId);if(i>=0&&i+1<localQueue.length)playSong(localQueue[i+1]);else document.getElementById("status").textContent="✅ 队列播完"}
-function prev(){a.pause();var i=localQueue.findIndex(t=>t.id===currentId);if(i>0)playSong(localQueue[i-1]);else if(localQueue.length>0){playSong(localQueue[0]);document.getElementById("status").textContent="🔁 第一首"}}
-document.getElementById("barWrap").addEventListener("click",function(e){if(!a.duration||isNaN(a.duration))return;var r=this.getBoundingClientRect();a.currentTime=Math.max(0,Math.min(a.duration,(e.clientX-r.left)/r.width*a.duration))});
-a.addEventListener("play",()=>document.getElementById("status").textContent="▶ 播放中");
-a.addEventListener("pause",()=>{if(!a.ended)document.getElementById("status").textContent="⏸ 暂停"});
-a.addEventListener("ended",()=>{document.getElementById("status").textContent="✅ 播放完毕";setTimeout(next,500)});
-a.addEventListener("error",()=>{setTimeout(()=>{if(currentId)resolveUrlFor(currentId)},2000)});
-a.addEventListener("timeupdate",()=>{if(a.duration&&!isNaN(a.duration)){document.getElementById("barFill").style.width=(a.currentTime/a.duration*100).toFixed(1)+"%";document.getElementById("curTime").textContent=fm(a.currentTime);document.getElementById("durTime").textContent=fm(a.duration)}});
-setInterval(poll,2000);poll();
-setInterval(()=>{if(currentId)fetch("/api/time",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({time:a.currentTime||0,songId:currentId,queue:localQueue.slice(0,20)})}).catch(()=>{})},3000);
-</script></body></html>`;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 HTTP Server
@@ -960,29 +907,8 @@ const server = http.createServer(async (req, res) => {
   const path = u.pathname.replace(/\/+$/, "") || "/";
 
   try {
-    // Player
-    if (req.method === "GET" && path === "/") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(playerHtml()); return; }
-    // State
-    if (req.method === "GET" && path === "/api/state") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ current: state.current || null, queue: state.queue.slice(0, 20), status: state.status, playUrl: state.current?.playUrl || "" })); return; }
-    // URL resolve
-    if (req.method === "GET" && path === "/api/url") {
-      const id = u.searchParams.get("id");
-      if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: "missing id" })); return; }
-      let playUrl = ""; try { playUrl = await getSongUrl(id) || ""; } catch {}
-      if (state.current?.id === id) state.current.playUrl = playUrl;
-      res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ playUrl })); return;
-    }
-    // Next/prev
-    if (req.method === "GET" && (path === "/api/next" || path === "/api/prev")) {
-      if (path === "/api/next" && state.queue.length > 1) { state.queue.shift(); state.current = state.queue[0]; }
-      if (state.current) state.current.playUrl = "";
-      res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: state.current?.id || "" })); return;
-    }
-    // Time sync
-    if (req.method === "POST" && path === "/api/time") {
-      try { const b = await readBody(req); state.currentTime = Number(b.time) || 0; } catch {}
-      res.writeHead(200); res.end("ok"); return;
-    }
+    // Root: health check / redirect
+    if (req.method === "GET" && path === "/") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, server: "Yuuke MCP v4.3", mcp: "/api/mcp" })); return; }
     // MCP POST
     if (req.method === "POST" && (path === "/api/mcp" || path.startsWith("/api/"))) {
       let body = await readBody(req);
@@ -1046,7 +972,7 @@ server.listen(PORT, async () => {
   console.log("   🧠 Memory:", "connecting to Ombre-Brain...");
   console.log("   🌿 Galatea:", GALATEA_TOKEN ? "connecting..." : "NOT SET");
   console.log("   MCP endpoint: http://localhost:" + PORT + "/api/mcp");
-  console.log("   Player: http://localhost:" + PORT);
+  console.log("   🎵 NCM Tools: playlists | ncm_search | ncm_accept_invite | ncm_send_message + 7 more");
   // 异步连接外部服务，不阻塞启动
   initOmbreBrain().then(() => {
     if (obReady) console.log("   🧠 Memory: " + obMemoryTools.length + " tools ready");
