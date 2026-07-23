@@ -408,80 +408,7 @@ async function mtSearch(keyword, lat, lng) {
   return { source: "real", keyword, count: shops.length, shops: shops.slice(0, 15) };
 }
 
-async function mtGetAddresses() {
-  if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
-  const result = await mtApi("/openh5/address/list", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      wm_latitude: "28673167", wm_longitude: "115887078",
-      openh5_uuid: "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C",
-    }).toString(),
-  });
-  if (result?.data?.code === 0) {
-    const list = result.data.data?.list || [];
-    return {
-      source: "real", count: list.length,
-      addresses: list.map(a => ({ id: String(a.addressId), name: a.name, phone: a.phone, address: a.poi })),
-    };
-  }
-  return { source: "error", reason: "api_failed" };
-}
-
-async function mtShopMenu(shopId) {
-  if (!MT_COOKIE || !shopId) return { source: "error", reason: "need shopId" };
-  const uuid = "7AEEA19018B2ABFC1C9F22CD67DB9A5389DB8A00850295DFC687E1F16155F59C";
-
-  const initResult = await mtApi("/openapi/v1/poi/food", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      geoType: "2", wm_poi_id: "-100", poi_id_str: shopId,
-      product_spu_id: "", source: "", uuid,
-      platform: "3", partner: "4", riskLevel: "71", optimusCode: "10",
-      wm_ctype: "openapi", wm_appversion: "4.0.0",
-      originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=" + shopId,
-      link_identifier_info: "",
-    }).toString(),
-  });
-
-  const tags = initResult?.data?.data?.food_spu_tags || [];
-  if (!tags.length) return { source: "error", reason: "no_tags" };
-
-  let result, usedTag;
-  for (const tag of tags) {
-    usedTag = tag.tag;
-    result = await mtApi("/openh5/v2/poi/menuproducts", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        wm_poi_id: "-100", poi_id_str: shopId,
-        spu_tag_id: String(usedTag),
-        support_new_page_v3: "true", sort_type: "1", tag_type: "1",
-        wm_latitude: "28673167", wm_longitude: "115887078",
-        openh5_uuid: uuid, uuid, platform: "3", partner: "4",
-        originUrl: "https://h5.waimai.meituan.com/waimai/mindex/menu?poi_id_str=" + shopId,
-        riskLevel: "71", optimusCode: "10",
-      }).toString(),
-    });
-    if (result?.data?.code === 0 && result.data.data?.product_count > 0) break;
-  }
-
-  if (result?.data?.code === 0) {
-    const d = result.data.data || {};
-    const list = d.product_spu_list || [];
-    return {
-      source: "real", count: list.length,
-      products: list.slice(0, 10).map(spu => ({
-        id: String(spu.spu_id || ""), name: spu.name || "",
-        price: spu.price || spu.min_price || "",
-        skus: (spu.sku_list || []).map(sku => ({ id: String(sku.sku_id || ""), price: sku.price || "" })),
-      })),
-      tagLog: "tag:" + usedTag + " count:" + d.product_count,
-    };
-  }
-  return { source: "error", reason: "menu_failed" };
-}
+// (mtGetAddresses 和 mtShopMenu 已移除 — mt_order 内置)
 
 async function mtPlaceOrder(shopId, itemId, skuId, addressId, quantity, attrIds, remark) {
   if (!MT_COOKIE) return { source: "error", reason: "no_cookie" };
@@ -574,8 +501,6 @@ const tools = [
   { name: "ncm_message_list", description: "Get recent private message contact list.", inputSchema: { type: "object", properties: {}, required: [] } },
   // ── 美团 ──
   { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery).", inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
-  { name: "mt_addresses", description: "Get saved delivery addresses from Meituan.", inputSchema: { type: "object", properties: {}, required: [] } },
-  { name: "mt_menu", description: "Get full menu for a Meituan shop.", inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
   { name: "mt_order", description: "全自动美团外卖下单：搜店→选品→加购→结算→填地址备注→选红包→提交。成功返回付款链接，403则返回结算页链接。", inputSchema: { type: "object", properties: { shopName: { type: "string", description: "店铺名，如 一点点、肯德基" }, productName: { type: "string", description: "商品名，如 藏青盐咸奶绿、热辣香骨鸡" }, specs: { type: "object", description: "规格选择，如 {\"份量\":\"大杯\",\"糖度\":\"三分糖\",\"冰度\":\"标准冰\"}，不传则用默认" }, addressName: { type: "string", description: "收货地址名（可选，默认用服务器配置）" }, remark: { type: "string", description: "备注，如 老婆辛苦了" }, useCoupons: { type: "boolean", default: true, description: "是否选红包" } }, required: ["shopName", "productName"] } },
   // ── 抖音（CDP 浏览器自动化 — 10G 冲浪优化）──
   { name: "dy_search", description: "在抖音首页推荐流中搜索视频。按关键词过滤标题和作者，返回匹配的视频列表（含作者、标题、点赞）。", inputSchema: { type: "object", properties: { keyword: { type: "string", description: "搜索关键词" } }, required: ["keyword"] } },
@@ -679,17 +604,6 @@ async function execTool(name, args) {
         try { const cdpResult = await cdp.mtSearch(keyword); if (cdpResult.source === "real") return JSON.stringify(cdpResult); } catch {}
         return JSON.stringify(result);
       }
-      case "mt_menu": {
-        // CDP: 搜店名点进去拿菜单
-        const shopName = args.shopName || args.shopId || "";
-        try {
-          const cdpResult = await cdp.mtMenu(shopName);
-          if (cdpResult.source === "real") return JSON.stringify(cdpResult);
-        } catch (e) { console.error("[mt_menu] CDP failed:", e.message); }
-        // fallback: API
-        if (args.shopId) return JSON.stringify(await mtShopMenu(args.shopId));
-        return JSON.stringify({ source: "error", reason: "need shopName or shopId" });
-      }
       case "mt_order": {
         const result = await mtOrder({
           shopName: args.shopName,
@@ -706,10 +620,6 @@ async function execTool(name, args) {
           return JSON.stringify({ ok: false, status: "403", previewUrl: result.previewUrl, hint: "提交被风控，点击链接手动提交即可" });
         }
         return JSON.stringify(result);
-      }
-      case "mt_addresses": {
-        const addrs = await mtGetAddresses();
-        return JSON.stringify(addrs);
       }
       // ── 抖音（CDP 浏览器，SSR JSON 优先）──
       case "dy_search": {
