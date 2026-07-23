@@ -1,0 +1,51 @@
+{
+  "domain": "www.douyin.com",
+  "skill": "发送评论/回复",
+  "version": "4.1",
+  "architecture": "VNC + CDP hybrid",
+  "contentTypes": ["/note/", "/article/", "/video/（重定向到Note）"],
+  "whyVnc": "CDP自己Page.navigate打开的tab不渲染评论区组件（Draft.js contenteditable），必须扫描复用VNC用户已打开的tab",
+  "steps": {
+    "findVncTab": {
+      "method": "httpGet(:9222/json)",
+      "filter": "url包含 modal_id 或 /note/ 或 /article/",
+      "note": "只关WebSocket不关tab，避免丢失VNC页面"
+    },
+    "reply": {
+      "selector": "span（textContent='回复'/'回复中'）",
+      "method": "JS parentElement.click()",
+      "note": "CDP鼠标点SPAN无效，必须JS click父元素。需区分主评论和子评论（x<240区分）",
+      "verify": "document.body.innerText.includes('回复中')",
+      "wait": "sleep(3000)确保回复状态稳定"
+    },
+    "editor": {
+      "selector": "[contenteditable=true]",
+      "fallback": "DraftEditor-root容器内的[contenteditable=true]",
+      "placeholder": "留下你的精彩评论吧",
+      "focus": "先focus确保Draft.js渲染完整"
+    },
+    "typing": {
+      "method": "CDP Input.dispatchKeyEvent逐字输入",
+      "sequence": "keyDown → char → keyUp（每字~80ms）",
+      "note": "execCommand('insertText')和合成事件均无效，必须真实键盘事件触发Draft.js onChange"
+    },
+    "send": {
+      "primarySelector": ".wchsYBpK.jfGCpJo0（36x36箭头SVG）",
+      "fallback": "编辑区附近任意36x36 SPAN",
+      "method": "JS btn.click() + dispatchEvent(MouseEvent)",
+      "note": "回复模式下wchs可能消失，兜底搜36x36 SPAN"
+    }
+  },
+  "pitfalls": [
+    "CDP自己Page.navigate的tab评论区不渲染→必须用VNC tab",
+    "Draft.js富文本编辑器只响应真实键盘事件",
+    "发送按钮是箭头图标无文字，靠尺寸(36x36)定位",
+    "execCommand('insertText')无效",
+    "CDP鼠标点击SPAN无效→必须JS parentElement.click()",
+    "回复状态下点编辑器容易误触取消'回复中'→x<300避开按钮区域+点击后验证",
+    "@用户名中Unicode全角字符可能导致文本匹配失败，用评论旁唯一文字",
+    "抖音审核可能拦截含'测试'字样的评论",
+    "comment-item.parentElement只有'0分享回复'，需往上4-5级取完整评论文本",
+    "y>300过滤滚出屏幕的评论（负值），y>200排除顶部评论区"
+  ]
+}

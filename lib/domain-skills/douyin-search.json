@@ -1,0 +1,37 @@
+{
+  "domain": "www.douyin.com",
+  "skill": "搜索视频",
+  "version": "4.1",
+  "url": "https://www.douyin.com",
+  "framework": "React SPA + PACE-ISLAND + Semi Design",
+  "steps": {
+    "input": {
+      "selector": "input[placeholder*=\"搜索\"]",
+      "method": "JS原生setter + dispatchEvent",
+      "events": ["input", "change", "keydown(Enter,keyCode:13)"],
+      "note": "必须用Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set + dispatchEvent，CDP键盘和execCommand均无效"
+    },
+    "wait": {
+      "method": "waitForDomStable",
+      "test": "body中有/^\\d+[.]*\\d*万$/的点赞数节点出现",
+      "timeout": 12000,
+      "fallback": "sleep(8000)"
+    },
+    "extract": {
+      "method": "innerText + 正则解析",
+      "format": "点赞数\\n标题+标签\\n@作者 ·日期",
+      "maxVideos": 15,
+      "outputFields": ["index", "desc", "author", "likes"]
+    },
+    "fallback": {
+      "method": "轻量DOM序列化",
+      "selector": "[class*=search-result] > *, [class*=video-card], [class*=card]",
+      "maxItems": 10
+    }
+  },
+  "pitfalls": [
+    "桌面版URL跳转全废，必须SPA内交互",
+    "SPA渲染时间不稳定（5-15s），用waitForDomStable不用固定sleep",
+    "搜索框的React受控组件不接受CDP Input.dispatchKeyEvent"
+  ]
+}

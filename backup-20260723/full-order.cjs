@@ -28,7 +28,7 @@ let loc=await E(`(function(){var m=(document.body?.innerText||"").match(/黎先/
 if(!loc){
   await E(`(function(){var el=document.querySelector("[class*=addr]");if(el)el.click();})()`);
   await sleep(2000);
-  const lx=JSON.parse(await E(`(function(){var all=document.querySelectorAll("*");for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;var t=(all[i].textContent||"").trim();if(t.includes("黎先菜店")&&t.length<20&&all[i].children.length<=2){var r=all[i].getBoundingClientRect();if(r.y>50)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});}}return"{}";})()`));
+  const lx=JSON.parse(await E(`(function(){var all=document.querySelectorAll("*");for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;var t=(all[i].textContent||"").trim();if(t.includes("默认地址")&&t.length<20&&all[i].children.length<=2){var r=all[i].getBoundingClientRect();if(r.y>50)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});}}return"{}";})()`));
   if(lx.x)await touch(lx.x,lx.y);
   await sleep(2000);
 }
@@ -102,17 +102,17 @@ console.log("  到:",(await E("location.href")).includes("preview")?"结算页":
 
 // ═══ Step 7: 填地址 ═══
 console.log("7. 地址");
-let hasAddr=await E("(document.body?.innerText||'').includes('黎先菜店')?'yes':'no'");
+let hasAddr=await E("(document.body?.innerText||'').includes('默认地址')?'yes':'no'");
 if(hasAddr!=="yes"){
   const addr=JSON.parse(await E(`(function(){var all=document.querySelectorAll("*");for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;if((all[i].textContent||"").trim()==="选择收货地址"&&all[i].children.length<=2){var r=all[i].getBoundingClientRect();if(r.y>0)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});}else{var p=all[i];for(var j=0;j<3;j++){if(!p)break;var pr=p.getBoundingClientRect();if(pr.width>200&&pr.height>30&&pr.y>0&&(p.textContent||"").trim().includes("黎先")){p.click();return JSON.stringify({x:-1,y:-1});}p=p.parentElement;}}}return"{}";})()`));
   if(addr.x>0)await touch(addr.x,addr.y);
   await sleep(2500);
-  // 选黎先菜店
-  const lx=JSON.parse(await E(`(function(){var all=document.querySelectorAll("*");for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;var t=(all[i].textContent||"").trim();if(t.includes("黎先菜店")&&t.length<30&&all[i].children.length<=2){var r=all[i].getBoundingClientRect();if(r.y>50)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});}}return"{}";})()`));
+  // 选默认地址
+  const lx=JSON.parse(await E(`(function(){var all=document.querySelectorAll("*");for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;var t=(all[i].textContent||"").trim();if(t.includes("默认地址")&&t.length<30&&all[i].children.length<=2){var r=all[i].getBoundingClientRect();if(r.y>50)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});}}return"{}";})()`));
   if(lx.x)await touch(lx.x,lx.y);
   await sleep(2000);
 }
-console.log("  地址:",(await E("(document.body?.innerText||'').includes('黎先菜店')?'OK':'FAIL'")));
+console.log("  地址:",(await E("(document.body?.innerText||'').includes('默认地址')?'OK':'FAIL'")));
 
 // ═══ Step 8: 备注 ═══
 console.log("8. 备注");

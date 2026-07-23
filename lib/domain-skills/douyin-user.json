@@ -1,0 +1,30 @@
+{
+  "domain": "www.douyin.com",
+  "skill": "查看用户主页/关注列表",
+  "version": "4.0",
+  "methods": {
+    "self": {
+      "trigger": "userId为'self'/'me'或空",
+      "method": "CDP鼠标点击'我的'按钮（React SPA）",
+      "note": "必须CDP Input.dispatchMouseEvent（moved→pressed→released），JS click可能不稳"
+    },
+    "following": {
+      "trigger": "userId为'following'",
+      "method": "先进个人主页→点'关注'标签",
+      "selector": "els[i].textContent==='关注' && els[i].children.length===0",
+      "note": "找最底层叶子'关注'元素避免点到tab容器"
+    },
+    "search": {
+      "trigger": "userId为具体用户名",
+      "method": "搜索用户名→点第一个用户结果",
+      "selector": "找包含'粉丝'/'获赞'/'作品'文字的最近clickable父元素",
+      "fallback": "先搜再点，因为抖音URL跳转全废"
+    }
+  },
+  "extract": "document.body.innerText.slice(0, 2500)",
+  "outputFields": ["昵称", "粉丝", "获赞", "作品列表"],
+  "pitfalls": [
+    "桌面版/user/{id} URL不工作，必须SPA内导航",
+    "'我的'按钮是React组件，JS click可能不触发React合成事件→双重保险CDP+JS"
+  ]
+}

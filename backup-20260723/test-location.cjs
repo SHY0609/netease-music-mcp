@@ -1,4 +1,4 @@
-// 改定位到黎先菜店
+// 改定位到默认地址
 const http=require("http"),WebSocket=require("ws"),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 (async()=>{
 const tabs=await new Promise(r=>{http.get("http://127.0.0.1:9222/json",res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>r(JSON.parse(d)));});});
@@ -22,19 +22,19 @@ if(!url.includes("mindex/home")){await send("Page.navigate",{url:"https://h5.wai
 let cur=await E(`(function(){var t=document.body?.innerText||"";var m=t.match(/黎先|老百姓|赤虎堂|钱小匠/);return m?m[0]:"?";})()`);
 console.log("当前定位:",cur);
 
-// 如果不是黎先，点地址 → 直接点黎先菜店
+// 如果不是黎先，点地址 → 直接点默认地址
 if(!cur.includes("黎先")){
   console.log("切换...");
   // 点地址栏
   await E(`(function(){var el=document.querySelector("[class*=addr]");if(el)el.click();})()`);
   await sleep(2000);
 
-  // 直接点列表里的黎先菜店
+  // 直接点列表里的默认地址
   const lx=JSON.parse(await E(`(function(){
     var all=document.querySelectorAll("*");
     for(var i=0;i<all.length;i++){if(!all[i].offsetParent)continue;
       var t=(all[i].textContent||"").trim();
-      if(t.includes("黎先菜店")&&t.length<20&&all[i].children.length<=2){
+      if(t.includes("默认地址")&&t.length<20&&all[i].children.length<=2){
         var r=all[i].getBoundingClientRect();if(r.y>50)return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
       }
     }return"{}";

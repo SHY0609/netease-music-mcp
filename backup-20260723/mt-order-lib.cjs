@@ -337,13 +337,13 @@ async function checkoutAndSubmit(session, addressName, remark, useCoupons) {
  * @param {string} opts.shopName - 店铺名（如"一点点"、"肯德基"）
  * @param {string} opts.productName - 商品名（如"藏青盐咸奶绿"、"热辣香骨鸡"）
  * @param {Object} [opts.specs] - 规格选择，如 {份量:"大杯", 糖度:"三分糖"}
- * @param {string} [opts.addressName="黎先菜店"] - 收货地址
+ * @param {string} [opts.addressName="默认地址"] - 收货地址
  * @param {string} [opts.remark] - 备注
  * @param {boolean} [opts.useCoupons=true] - 是否选红包
  * @returns {Object} { ok, status, previewUrl?, url? }
  */
 async function mtOrder(opts = {}) {
-  const { shopName, productName, specs, addressName = "黎先菜店", remark, useCoupons = true } = opts;
+  const { shopName, productName, specs, addressName = "默认地址", remark, useCoupons = true } = opts;
   if (!shopName || !productName) return { ok: false, reason: "need shopName and productName" };
 
   // 1. 连接

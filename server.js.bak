@@ -19,7 +19,7 @@ import { deflateSync } from "node:zlib";
 import { createRequire } from "node:module";
 import {
   weapi, eapiEncrypt, eapiPost,
-  getUserPlaylists, searchSongs, getSongDetail, getLyrics,
+  getUserPlaylists, searchSongs, getSongUrl, getSongDetail, getLyrics,
   getPlaylistDetail, addToPlaylist, getPlaylistTracks,
   acceptListenTogether, endListenTogether, listenTogetherHeartbeat,
   listenTogetherStatus, playCommandReport, addSongToList,
@@ -37,7 +37,6 @@ try { const mod = await import("./lib/taobao-browser.js"); tbBrowserSearch = mod
 const require = createRequire(import.meta.url);
 const { getMtgsig, init: initSigner } = require("./lib/mt-signer-v2.cjs");
 const cdp = require("./lib/cdp-meituan.cjs");
-const { mtOrder } = require("./lib/mt-order.cjs");
 const dy = require("./lib/cdp-douyin.cjs");  // 抖音 CDP
 
 const COOKIE = process.env.NETEASE_COOKIE || "";
@@ -576,7 +575,7 @@ const tools = [
   { name: "mt_search", description: "Search nearby shops on Meituan (food, grocery).", inputSchema: { type: "object", properties: { keyword: { type: "string" }, lat: { type: "string" }, lng: { type: "string" } }, required: ["keyword"] } },
   { name: "mt_addresses", description: "Get saved delivery addresses from Meituan.", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "mt_menu", description: "Get full menu for a Meituan shop.", inputSchema: { type: "object", properties: { shopId: { type: "string" } }, required: ["shopId"] } },
-  { name: "mt_order", description: "全自动美团外卖下单：搜店→选品→加购→结算→填地址备注→选红包→提交。成功返回付款链接，403则返回结算页链接。", inputSchema: { type: "object", properties: { shopName: { type: "string", description: "店铺名，如 一点点、肯德基" }, productName: { type: "string", description: "商品名，如 藏青盐咸奶绿、热辣香骨鸡" }, specs: { type: "object", description: "规格选择，如 {\"份量\":\"大杯\",\"糖度\":\"三分糖\",\"冰度\":\"标准冰\"}，不传则用默认" }, addressName: { type: "string", default: "默认地址", description: "收货地址名" }, remark: { type: "string", description: "备注，如 老婆辛苦了" }, useCoupons: { type: "boolean", default: true, description: "是否选红包" } }, required: ["shopName", "productName"] } },
+  { name: "mt_order", description: "Order food via browser automation. Pass shopId + itemName (product name from menu). For example: itemName='桃桃茉莉冰茶'. After preview, reply '确认下单' to confirm.", inputSchema: { type: "object", properties: { shopId: { type: "string" }, itemId: { type: "string", description: "Product ID (legacy)" }, itemName: { type: "string", description: "Product name to find and click on the page (e.g. '桃桃茉莉冰茶')" }, skuId: { type: "string" }, addressId: { type: "string" }, quantity: { type: "number", default: 1 }, attrIds: { type: "array", items: { type: "number" } }, remark: { type: "string" } }, required: ["shopId"] } },
   // ── 抖音（CDP 浏览器自动化 — 10G 冲浪优化）──
   { name: "dy_search", description: "在抖音首页推荐流中搜索视频。按关键词过滤标题和作者，返回匹配的视频列表（含作者、标题、点赞）。", inputSchema: { type: "object", properties: { keyword: { type: "string", description: "搜索关键词" } }, required: ["keyword"] } },
   { name: "dy_trending", description: "抖音热搜榜 — 当前最火的话题和视频。", inputSchema: { type: "object", properties: {}, required: [] } },
@@ -691,21 +690,26 @@ async function execTool(name, args) {
         return JSON.stringify({ source: "error", reason: "need shopName or shopId" });
       }
       case "mt_order": {
-        const result = await mtOrder({
-          shopName: args.shopName,
-          productName: args.productName,
-          specs: args.specs,
-          addressName: args.addressName || "默认地址",
-          remark: args.remark,
-          useCoupons: args.useCoupons !== false,
-        });
-        if (result.ok) {
-          return JSON.stringify({ ok: true, status: "success", url: result.url, hint: "订单已提交，请在手机上完成付款" });
+        // 🔥 直接走 API 下单（CDP 浏览器常被美团风控）
+        const shopId = args.shopId || "";
+        const itemId = args.itemId || "";
+        const skuId = args.skuId || itemId;
+        const addrId = args.addressId || "1950000001"; // 默认"宋-黎先菜店"
+        if (!shopId || !itemId) return JSON.stringify({ source: "error", reason: "需要 shopId 和 itemId/skuId（从 mt_search 结果中获取）" });
+
+        const order = await mtPlaceOrder(shopId, itemId, skuId, addrId, args.quantity || 1, args.attrIds || [], args.remark || "");
+
+        if (order.source === "real" && order.step === "created") {
+          const payUrl = order.payUrl || "";
+          return JSON.stringify({
+            ...order,
+            hint: payUrl ? `💳 订单已创建！[点此付款](${payUrl})` : "订单已创建，请打开美团App付款",
+          });
         }
-        if (result.status === "403") {
-          return JSON.stringify({ ok: false, status: "403", previewUrl: result.previewUrl, hint: "提交被风控，点击链接手动提交即可" });
+        if (order.source === "real") {
+          return JSON.stringify({ ...order, hint: `预览成功。实付 ¥${order.totalPrice}。再调一次 mt_order 确认下单。` });
         }
-        return JSON.stringify(result);
+        return JSON.stringify(order);
       }
       case "mt_addresses": {
         const addrs = await mtGetAddresses();
@@ -941,7 +945,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && path === "/api/url") {
       const id = u.searchParams.get("id");
       if (!id) { res.writeHead(400); res.end(JSON.stringify({ error: "missing id" })); return; }
-      let playUrl = ""; // legacy: getSongUrl removed in v4.4
+      let playUrl = ""; try { playUrl = await getSongUrl(id) || ""; } catch {}
       if (state.current?.id === id) state.current.playUrl = playUrl;
       res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ playUrl })); return;
     }
