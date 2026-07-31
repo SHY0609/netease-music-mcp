@@ -556,7 +556,16 @@ async function execTool(name, args) {
       }
       case "ncm_room_status": {
         if (!args.roomId) return "Missing roomId";
-        return JSON.stringify(await listenTogetherStatus(args.roomId, COOKIE));
+        const raw = await listenTogetherStatus(args.roomId, COOKIE);
+        const pc = raw?.data?.playCommand || {};
+        const pl = raw?.data?.playlist?.displayList?.result || [];
+        return JSON.stringify({
+          songId: pc.targetSongId || "",
+          status: pc.playStatus || "",
+          commandType: pc.commandType || "",
+          playlistCount: pl.length,
+          playlist: pl.slice(0, 5), // 只返回前5首，省 token
+        });
       }
       case "ncm_switch_song": {
         const roomId = args.roomId || [...heartbeatRooms.keys()][0];
@@ -586,7 +595,22 @@ async function execTool(name, args) {
       case "ncm_read_messages": {
         if (!args.userId) return "Missing userId";
         const data = await getPrivateMessages(args.userId, COOKIE, args.limit || 20);
-        return JSON.stringify(data);
+        // 瘦身：只保留 nickname + msg + type + time，砍掉完整 profile
+        const msgs = (data.msgs || []).map(m => {
+          let inner = {};
+          try { inner = JSON.parse(m.msg); } catch {}
+          return {
+            from: m.fromUser?.nickname || "",
+            msg: inner.msg || inner.title || "",
+            type: inner.type || "",
+            notice: inner.generalMsg?.noticeMsg || "",
+            roomId: (inner.generalMsg?.nativeUrl || "").match(/roomId%3D([^%]+)/)?.[1] || "",
+            inviterId: (inner.generalMsg?.nativeUrl || "").match(/inviterId%3D(\d+)/)?.[1] || "",
+            time: m.time || 0,
+            timeStr: m.time ? new Date(m.time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "",
+          };
+        });
+        return JSON.stringify({ more: data.more, msgs });
       }
       case "ncm_message_list": {
         return JSON.stringify(await getPrivateList(COOKIE));
