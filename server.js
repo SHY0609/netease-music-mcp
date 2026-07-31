@@ -46,12 +46,20 @@ const TB_COOKIE = process.env.TAOBAO_COOKIE || "";
 const PORT = process.env.PORT || 3000;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const OB_URL = "http://127.0.0.1:18001/mcp";  // Ombre-Brain 记忆库
+const OB_TOKEN = process.env.OB_TOKEN || "";
 const GALATEA_URL = "https://galatea.abysslumina.com/mcp";
 const GALATEA_TOKEN = process.env.GALATEA_TOKEN || "gg_nj2lRj6A84VrPvycdireDyGAaT7RduOUBHYEXuN-uGM";
 
 // ─── Ombre-Brain 记忆库状态 ────────────────────────────────────
 let obSessionId = null;
 let obReady = false;
+
+function obHeaders(extra = {}) {
+  const h = { "Content-Type": "application/json", "Accept": "application/json", ...extra };
+  if (OB_TOKEN) h["Authorization"] = `Bearer ${OB_TOKEN}`;
+  if (obSessionId) h["Mcp-Session-Id"] = obSessionId;
+  return h;
+}
 let obMemoryTools = [];
 
 // ─── Galatea 代理状态 ──────────────────────────────────────────
@@ -86,7 +94,7 @@ async function initOmbreBrain() {
     // Step 1: MCP initialize 握手
     const initRes = await fetch(OB_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      headers: obHeaders(),
       body: JSON.stringify({
         jsonrpc: "2.0", id: 0, method: "initialize",
         params: {
@@ -105,14 +113,14 @@ async function initOmbreBrain() {
     // Step 2: initialized 通知
     await fetch(OB_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(obSessionId ? { "Mcp-Session-Id": obSessionId } : {}) },
+      headers: obHeaders(),
       body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
     });
 
     // Step 3: 获取记忆工具列表
     const toolsRes = await fetch(OB_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(obSessionId ? { "Mcp-Session-Id": obSessionId } : {}) },
+      headers: obHeaders(),
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
     });
     const toolsText = await toolsRes.text();
@@ -136,11 +144,9 @@ function isMemoryTool(name) {
 async function forwardToOB(msg) {
   if (!obReady) return null;
   try {
-    const headers = { "Content-Type": "application/json", "Accept": "application/json" };
-    if (obSessionId) headers["Mcp-Session-Id"] = obSessionId;
     const res = await fetch(OB_URL, {
       method: "POST",
-      headers,
+      headers: obHeaders(),
       body: JSON.stringify(msg)
     });
     const text = await res.text();
@@ -150,8 +156,7 @@ async function forwardToOB(msg) {
       console.log("OB session expired, re-initializing...");
       await initOmbreBrain();
       if (obReady && obSessionId) {
-        const headers2 = { "Content-Type": "application/json", "Accept": "application/json", "Mcp-Session-Id": obSessionId };
-        const res2 = await fetch(OB_URL, { method: "POST", headers: headers2, body: JSON.stringify(msg) });
+        const res2 = await fetch(OB_URL, { method: "POST", headers: obHeaders(), body: JSON.stringify(msg) });
         const text2 = await res2.text();
         return parseSSE(text2) || JSON.parse(text2);
       }
