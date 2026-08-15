@@ -1,0 +1,37 @@
+{
+  "skill": "CDP浏览器基础设施（共享）",
+  "version": "4.1",
+  "usedBy": ["douyin", "meituan"],
+  "browser": {
+    "binary": ["/snap/bin/chromium", "/usr/bin/chromium-browser"],
+    "port": 9222,
+    "display": ":99",
+    "profile": "/home/ubuntu/chrome-cdp-profile",
+    "flags": [
+      "--password-store=basic",
+      "--gtk-version=3",
+      "--disable-features=TFLiteLanguageDetectionEnabled",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      "--disable-setuid-sandbox"
+    ],
+    "note": "Snap版不能用systemd管理（cgroup冲突），只能Node.js spawn()"
+  },
+  "cdp": {
+    "newTab": "PUT /json/new（新版Chromium要求PUT非GET）",
+    "sessionMode": "持久session（ensureDouyin/ensurePingxiang），复用不关",
+    "crashWatchdog": "ws.on('close') + ws.on('error') + crashed getter → 自动重建session",
+    "stealth": "Page.addScriptToEvaluateOnNewDocument注入navigator.webdriver=false等"
+  },
+  "domWait": {
+    "helper": "waitForDomStable(send, testExpr, timeout, pollMs)",
+    "pattern": "Runtime.evaluate轮询检查DOM状态，替代固定sleep()",
+    "fallback": "超时后用原sleep()保底"
+  },
+  "knownIssues": [
+    "Chromium Snap版cgroup冲突导致'/system.slice/xxx is not a snap cgroup'",
+    "Xvfb虚拟显示器需提前启动（DISPLAY=:99）",
+    "chromium zombie进程需定期pkill清理"
+  ]
+}

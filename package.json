@@ -14,6 +14,7 @@
     "cookie": "^1.1.1",
     "jsdom": "^22.1.0",
     "jsdom-browser.screen": "^0.2.2",
+    "puppeteer": "^25.3.0",
     "xhr2": "^0.2.1"
   }
 }

@@ -1,0 +1,33 @@
+{
+  "domain": "h5.waimai.meituan.com",
+  "skill": "搜索店铺/菜单/下单",
+  "version": "3.6",
+  "url": "https://h5.waimai.meituan.com/waimai/mindex",
+  "architecture": "CDP浏览器自动化（持久session ensurePingxiang）",
+  "auth": {
+    "method": "Cookie注入",
+    "env": "MEITUAN_COOKIE",
+    "keyCookies": ["oops", "token", "mt_c_token", "w_token", "auth", "userId"],
+    "domain": ".meituan.com"
+  },
+  "address": {
+    "selector": ".addr_W3eGpu",
+    "target": "默认地址",
+    "method": "querySelectorAll(*)→找最小子元素含目标文字→click",
+    "note": "精准定位最小子元素避免点到父容器触发其他行为"
+  },
+  "search": {
+    "trigger": "点击搜索框→输入关键词→点searchText按钮",
+    "wait": "waitForDomStable检查body有¥符号+len>200",
+    "extract": "innerText + parseShops()正则解析（店名/评分/月售/起送/配送/产品）"
+  },
+  "order": {
+    "steps": ["回首页(SPA tab)", "搜店→进店", "滚页面+点+号qty次", "购物车→去结算→提交订单"],
+    "pitfall": "加购后需sleep(800)等DOM更新才能加下一件"
+  },
+  "pitfalls": [
+    "美团高频测试触发418人机验证",
+    "地址选择必须精准最小子元素，父元素click可能触发其他行为",
+    "页面结构变化时selectors（.addr_W3eGpu等）可能失效"
+  ]
+}
